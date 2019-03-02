@@ -12,15 +12,15 @@ permalink:        pretty
 #relative_permalinks: true
 
 # Setup
-title:            Hyde
-tagline:          'A Jekyll theme'
-description:      'A brazen two-column <a href="http://jekyllrb.com" target="_blank">Jekyll</a> theme that pairs a prominent sidebar with uncomplicated content. Made by <a href="https://twitter.com/mdo" target="_blank">@mdo</a>.'
+title:            Hex Fish
+tagline:          ''
+description:      ''
 url:              http://hyde.getpoole.com
 baseurl:          /
 
 author:
-  name:           'Mark Otto'
-  url:            https://twitter.com/mdo
+  name:           'Hex Fish'
+  url:            https://twitter.com/0xf15h
 
 paginate:         5
 paginate_path: "page:num"
@@ -29,4 +29,4 @@ paginate_path: "page:num"
 version:          2.1.0
 
 github:
-  repo:           https://github.com/poole/hyde
+  repo:           https://github.com/0xf15h
