@@ -2,10 +2,10 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
 
  <title>Hex Fish</title>
- <link href="http://localhost:4000/atom.xml" rel="self"/>
- <link href="http://localhost:4000/"/>
- <updated>2020-04-29T10:04:59-04:00</updated>
- <id>http://localhost:4000</id>
+ <link href="http://0xf15h.github.io/atom.xml" rel="self"/>
+ <link href="http://0xf15h.github.io/"/>
+ <updated>2020-04-29T10:20:31-04:00</updated>
+ <id>http://0xf15h.github.io</id>
  <author>
    <name>Hex Fish</name>
    <email></email>
@@ -14,9 +14,9 @@
  
  <entry>
    <title>Hidden Cheat Code within Super Meat Boy's Save File</title>
-   <link href="http://localhost:4000/2020/04/28/super-meat-boy/"/>
+   <link href="http://0xf15h.github.io/2020/04/28/super-meat-boy/"/>
    <updated>2020-04-28T00:00:00-04:00</updated>
-   <id>http://localhost:4000/2020/04/28/super-meat-boy</id>
+   <id>http://0xf15h.github.io/2020/04/28/super-meat-boy</id>
    <content type="html">&lt;p&gt;This weekend I got stuck on a level in Super Meat Boy and needed to take a break so I decided to poke around the binary
 for a bit. I started with a bit of recon by checking out some of the files that shipped with the binary.&lt;/p&gt;
 
