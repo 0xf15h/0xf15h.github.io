@@ -1,5 +1,5 @@
 # Personal Blog
-This site was made possible thanks to the [Hyde](https://github.com/poole/poole) project.
+This site uses the [Hyde](https://github.com/poole/hyde) Jekyll theme.
 
 ## Dependencies
 ```
