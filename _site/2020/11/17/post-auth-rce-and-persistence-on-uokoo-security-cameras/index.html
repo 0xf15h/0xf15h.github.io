@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  
+  
+  <title>Post-Auth RCE and Persistence on UOKOO Security Cameras</title>
+  <meta name="description" content="Recently, I haven’t been doing much reverse engineering at my day job, so I wanted to start a small side project that incorporates some reversing; security camera VR seemed like the perfect project. To avoid the devastation of finding a n-day, I specifically looked for devices that didn’t have any CVEs. Amazon’s top results for “security cameras” gave me an endless list of devices to pick from, so I chose the first option listed without CVEs, a UOKOO security camera. Getting User Credentials The iSmartViewPro app is used to setup the WiFi connection, customize device settings, and flash the most recent firmware update. The instruction manual gives the device’s default credentials: admin as the username and 123456 or 888888 as the password. These credentials are used across all UOKOO cameras, and users aren’t required to change them during setup. After the device was configured, I nmaped it and saw a server listening on port 80. Lo and behold, it was a HTTP web server prompting for device login credentials. Initially, I was disappointed that this security camera was ignorant of basic security practices, but after a quick glance in Wireshark, I was surprised to find it using digest access authentication (RFC-2617). This authentication scheme hashes the password concatenated with a server provided nonce before sending it over the network to prevent the server from receiving passwords in plaintext, while also mitigating replay attacks. According to the RFC, the authentication is supposed to take place inside a TLS connection to prevent MitM attacks. If a MitM sets the value of the WWW-Authenticate HTTP header in the server’s response to Basic, the user’s credentials will be sent in Base64 encoding which can easily be decoded. UOKOO Security Camera Login MitM I’m glad that the UOKOO developers at least attempted to secure their login page, as opposed to many of their competitors, even though in reality it wasn’t effective. Between the default credentials and the insecure login page, it’s not too difficult to get the login credentials, which we’ll use later… Getting a Shell Before I started reversing, I wanted to get a shell on the device so I could read logs, debug programs, and send files to/from the device. Most IoT devices expose a serial port on the PCB that drops clients directly into a shell, so I thought I should give that a try. When the front cover of the camera is removed, the PCB presents silkscreen labeled UART pads. This saved me a few minutes of prodding around with a multimeter. Sorry about the blurry image, I apparently don’t know how to focus an iPhone camera. After I soldered some wires onto the pads, I used devttys0’s baudrate brute force script to find the 115200 bps baud rate. Once connected, the serial connection dropped me into a root shell—as is tradition. Attack Surface Enumeration Using the root shell, netstat -plnt showed me which programs were listening for a remote connection. Active Internet connections (only servers) Proto Recv-Q Send-Q Local Address Foreign Address State PID/Program name tcp 0 0 0.0.0.0:65531 0.0.0.0:* LISTEN 360/FWUpdateSvr tcp 0 0 127.0.0.1:10080 0.0.0.0:* LISTEN 407/hyrtspd tcp 0 0 0.0.0.0:554 0.0.0.0:* LISTEN 407/hyrtspd tcp 0 0 0.0.0.0:80 0.0.0.0:* LISTEN 407/hyrtspd As you can see, our attack surface was rather small because it’s a pretty dumb device. Both processes had obvious roles, given their names: FWUpdateSvr is the firmware update server and hyrtspd is a RTSP daemon. If you look closely, the hyrtspd program is listening on port 80, which means it’s also the HTTP server we looked at earlier. Firmware Update Protocol I decided to reverse engineer the firmware update server’s update protocol before the RTSP daemon because I knew it would parse a significant amount of unsanitized data. There are two different ways to approach this: 1) Reverse the iSmartViewPro Android app’s firmware update functionality 2) Reverse the server-side firmware update parsing and create your own update from scratch Reversing the Android app sounded super boring because I wanted to reverse some native code, not decompiled Java bytecode. If I wanted a PoC ASAP, I would have opted for the app reversing but this project is all about having fun. The update servers is a small 15 kB stripped C++ program written by the developer that goes by the alias PETER.PAN, according to the startup banner. As shown in the netstat output, the server listens on port 65531 for the authentication message. struct uokoo_firmware_update_authentication_message { unsigned char unknown[4]; unsigned char username[32]; unsigned char password[32]; }; The username and password are send in plaintext, which means a passive MitM can get the credentials. Now we have three vectors to expose login credentials: 1) Use the default username and password 2) MitM the login request 3) Passively MitM a firmware update When the server accepts a connection, it immediately creates a CDBManager object (implemented in the libdbmanager.so library) which opens a connection to the /var/db/ipcsys.db SQLite database. It then calls the CDBManager’s QryUserInfoFromDBByID method which executes the follow SQL query: SELECT C_UserName, c_role_id, C_PassWord, c_role_name FROM v_user_role_detail WHERE C_UserID=%d The C_UserID field is set to 10001, which is the user ID of the admin user. The QryUserInfoFromDBByID method returns a response in an USERINFOQRY structure: struct USERINFOQRY { uint32_t user_id; // Not set in this query uint64_t role_id; // From the c_role_id field char username[32]; // From the C_UserName field char password[32]; // From the C_PassWord field uint32_t role_name; // From the c_role_name field }; The server strcmp compares the username and password fields from the firmware update’s authentication messages with the C_UserID and C_PassWord credentials from the database. If both usernames and passwords match, the client is authenticated and the server returns HY01 to denote successful authentication. The client then sends the firmware update header. // Bit mask for the firmware update header&#39;s update flag #define UPDATE_USER_BIN_AND_DB 1 #define UPDATE_KERNEL 2 #define UPDATE_ROOT_FS 4 #define BACKUP_IPC_SYS_DB 8 struct uokoo_firmware_update_header { unsigned char update_type[4]; unsigned char crc[4]; unsigned char compressed_update_size[4]; unsigned char decompressed_update_size[4]; unsigned char update_flag; unsigned char update_type_number; unsigned char padding; unsigned char hardware_version[2]; unsigned char padding[27]; }; The firmware update type is either HY01 or HY02. The HY01 type skips the hardware version check while the HY02 rejects updates that do not match the current firmware’s hardware version. The CRC field is logged server-side but never checked so it can be ignored. The update sizes are used to determine if the device has enough storage to apply the update. The server calls statfs on /mnt/mtd/ to determine the amount of free space it has. It then compares the amount of free space to the update header’s decompressed update size. If there’s not enough space left on the device, it rejects the update. I’d strongly recommend not fudging the decompressed update size because it could brick the device. The update flag is a bit field representing what parts of the device the firmware update will apply to. UPDATE_USER_BIN_AND_DB: Updates the user.bin and mtd_db.bin by flashing /var/user/user.bin to /dev/mtd3, /var/user/mtd_db.bin to /dev/mtd4, and /var/user/mtd_dbback.bin to /dev/mtd5. UPDATE_KERNEL: Updates the kernel by flashing /var/kernel/kernel.bin to /dev/mtd1. UPDATE_ROOT_FS: Updates the rootfs by flashing /var/rootfs/rootfs.bin to /dev/mtd2. BACKUP_IPC_SYS_DB: Creates a backup of the device’s /var/ipcsys.db database in /mnt/mtd/dbback. All other modifications are ignored. As I mentioned earlier, the hardware version is only checked if the update type is HY02. The hardware version can be seen from the device’s web interface in Set Up -&amp;gt; About -&amp;gt; System Firmware. The hardware version is between the first and second period. For example, in the image above the firmware version is 00.30.01.0049P4 so the hardware version would be the ASCII value 30. This firmware version is stored on the device in /mnt/mtd/etc/ipcversion. After the header is validated, the server responds with HY01. It then starts reading the firmware update in 0x400 byte chunks to /var/tmp_update.zip. The firmware update is expected to be in zip format, which is later unzipped in the root directory. If we send a firmware update that passes all the firmware update server’s checks, we get an arbitrary file write primitive! After the update server applies all updates, it reboots the device. The following snippet shows the server logs of a successful update, before rebooting, with the firmware upgrade zip containing pwn.txt. RCE and Persistence The easiest way to achieve RCE in this situation is to overwrite a file that later gets executed. Before we start looking for an executable to target, we need to know which filesystems are mounted with write permissions. [root@GM]# mount rootfs on / type rootfs (rw) /dev/root on / type squashfs (ro,relatime) tmpfs on /dev type tmpfs (rw,relatime,mode=755) tmpfs on /tmp type tmpfs (rw,relatime,mode=777) tmpfs on /var type tmpfs (rw,relatime,mode=755) tmpfs on /bin type tmpfs (rw,relatime,mode=755) tmpfs on /usr type tmpfs (rw,relatime,mode=755) tmpfs on /sbin type tmpfs (rw,relatime,mode=755) /dev/sys on /sys type sysfs (rw,relatime) none on /proc type proc (rw,relatime) devpts on /dev/pts type devpts (rw,relatime,mode=600,ptmxmode=000) tmpfs on /dev/shm type tmpfs (rw,relatime,size=49152k) /dev/mtdblock3 on /mnt/mtd type jffs2 (rw,relatime) /dev/mtdblock4 on /mnt/mtd/db type jffs2 (rw,relatime) /dev/mtdblock5 on /mnt/mtd/dbback type jffs2 (rw,relatime) tmpfs on /etc type tmpfs (rw,relatime,mode=755) Additionally, the file must be written to a filesystem that persists reboots because the device is rebooted immediately after the firmware update. Since the root directory is read-only and the tmpfs directories do not persist, our scope was limited to executables in the jffs2 directories. Initially, the vg_boot.sh script was an appealing target because it persisted modification and executed on boot. The downside was that it contained commands that were specific to the device model which would make porting the exploit a pain. I kept searching and eventually found the absolute best-case scenario in the middle of the /mnt/mtd/etc/start.sh script. filelist=`ls /mnt/mtd/etc/app` for file in $filelist do chmod +x /mnt/mtd/etc/app/$file /bin/sh /mnt/mtd/etc/app/$file &amp;amp; done It executes every file in /mnt/mtd/etc/app/ on boot, which is a directory that is writable and persists reboots! The full exploit chain would follow the steps: 1) Create a zip file with our executable payload in /mntd/mtd/etc/app/ 2) Use the default or exposed credentials to send the zip file as a firmware update 3) Wait for the firmware update server to reboot the device 4) /mnt/mtd/etc/start.sh gets executed on boot which then executes every file in /mnt/mtd/etc/app, including our payload! I’ve released an exploit on GitHub which sends a firmware update that writes dropbear to /mnt/mtd/etc/ and give us remote persistent access to the camera. Supported Devices Unsupported Devices Security Recommendations 1) Use a TLS connection between the client and server 2) Cryptographically sign the firmware updates and verify them before applying the update 3) Create device specific default credentials or force users to change the password after initial configuration">
+  
+
+  <link rel="stylesheet" href="/assets/main.css">
+  <link rel="canonical" href="https://0xf15h.github.io/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/">
+  
+  
+  <link rel="alternate" type="application/rss+xml" title="Hex Fish&#39;s Blog" href="https://0xf15h.github.io/feed.xml">
+
+  
+
+  
+  <meta property="og:title" content="Post-Auth RCE and Persistence on UOKOO Security Cameras">
+  <meta property="og:site_name" content="Hex Fish&#39;s Blog">
+  <meta property="og:url" content="https://0xf15h.github.io/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/">
+  <meta property="og:description" content="Recently, I haven’t been doing much reverse engineering at my day job, so I wanted to start a small side project that incorporates some reversing; security camera VR seemed like the perfect project. To avoid the devastation of finding a n-day, I specifically looked for devices that didn’t have any CVEs. Amazon’s top results for “security cameras” gave me an endless list of devices to pick from, so I chose the first option listed without CVEs, a UOKOO security camera. Getting User Credentials The iSmartViewPro app is used to setup the WiFi connection, customize device settings, and flash the most recent firmware update. The instruction manual gives the device’s default credentials: admin as the username and 123456 or 888888 as the password. These credentials are used across all UOKOO cameras, and users aren’t required to change them during setup. After the device was configured, I nmaped it and saw a server listening on port 80. Lo and behold, it was a HTTP web server prompting for device login credentials. Initially, I was disappointed that this security camera was ignorant of basic security practices, but after a quick glance in Wireshark, I was surprised to find it using digest access authentication (RFC-2617). This authentication scheme hashes the password concatenated with a server provided nonce before sending it over the network to prevent the server from receiving passwords in plaintext, while also mitigating replay attacks. According to the RFC, the authentication is supposed to take place inside a TLS connection to prevent MitM attacks. If a MitM sets the value of the WWW-Authenticate HTTP header in the server’s response to Basic, the user’s credentials will be sent in Base64 encoding which can easily be decoded. UOKOO Security Camera Login MitM I’m glad that the UOKOO developers at least attempted to secure their login page, as opposed to many of their competitors, even though in reality it wasn’t effective. Between the default credentials and the insecure login page, it’s not too difficult to get the login credentials, which we’ll use later… Getting a Shell Before I started reversing, I wanted to get a shell on the device so I could read logs, debug programs, and send files to/from the device. Most IoT devices expose a serial port on the PCB that drops clients directly into a shell, so I thought I should give that a try. When the front cover of the camera is removed, the PCB presents silkscreen labeled UART pads. This saved me a few minutes of prodding around with a multimeter. Sorry about the blurry image, I apparently don’t know how to focus an iPhone camera. After I soldered some wires onto the pads, I used devttys0’s baudrate brute force script to find the 115200 bps baud rate. Once connected, the serial connection dropped me into a root shell—as is tradition. Attack Surface Enumeration Using the root shell, netstat -plnt showed me which programs were listening for a remote connection. Active Internet connections (only servers) Proto Recv-Q Send-Q Local Address Foreign Address State PID/Program name tcp 0 0 0.0.0.0:65531 0.0.0.0:* LISTEN 360/FWUpdateSvr tcp 0 0 127.0.0.1:10080 0.0.0.0:* LISTEN 407/hyrtspd tcp 0 0 0.0.0.0:554 0.0.0.0:* LISTEN 407/hyrtspd tcp 0 0 0.0.0.0:80 0.0.0.0:* LISTEN 407/hyrtspd As you can see, our attack surface was rather small because it’s a pretty dumb device. Both processes had obvious roles, given their names: FWUpdateSvr is the firmware update server and hyrtspd is a RTSP daemon. If you look closely, the hyrtspd program is listening on port 80, which means it’s also the HTTP server we looked at earlier. Firmware Update Protocol I decided to reverse engineer the firmware update server’s update protocol before the RTSP daemon because I knew it would parse a significant amount of unsanitized data. There are two different ways to approach this: 1) Reverse the iSmartViewPro Android app’s firmware update functionality 2) Reverse the server-side firmware update parsing and create your own update from scratch Reversing the Android app sounded super boring because I wanted to reverse some native code, not decompiled Java bytecode. If I wanted a PoC ASAP, I would have opted for the app reversing but this project is all about having fun. The update servers is a small 15 kB stripped C++ program written by the developer that goes by the alias PETER.PAN, according to the startup banner. As shown in the netstat output, the server listens on port 65531 for the authentication message. struct uokoo_firmware_update_authentication_message { unsigned char unknown[4]; unsigned char username[32]; unsigned char password[32]; }; The username and password are send in plaintext, which means a passive MitM can get the credentials. Now we have three vectors to expose login credentials: 1) Use the default username and password 2) MitM the login request 3) Passively MitM a firmware update When the server accepts a connection, it immediately creates a CDBManager object (implemented in the libdbmanager.so library) which opens a connection to the /var/db/ipcsys.db SQLite database. It then calls the CDBManager’s QryUserInfoFromDBByID method which executes the follow SQL query: SELECT C_UserName, c_role_id, C_PassWord, c_role_name FROM v_user_role_detail WHERE C_UserID=%d The C_UserID field is set to 10001, which is the user ID of the admin user. The QryUserInfoFromDBByID method returns a response in an USERINFOQRY structure: struct USERINFOQRY { uint32_t user_id; // Not set in this query uint64_t role_id; // From the c_role_id field char username[32]; // From the C_UserName field char password[32]; // From the C_PassWord field uint32_t role_name; // From the c_role_name field }; The server strcmp compares the username and password fields from the firmware update’s authentication messages with the C_UserID and C_PassWord credentials from the database. If both usernames and passwords match, the client is authenticated and the server returns HY01 to denote successful authentication. The client then sends the firmware update header. // Bit mask for the firmware update header&#39;s update flag #define UPDATE_USER_BIN_AND_DB 1 #define UPDATE_KERNEL 2 #define UPDATE_ROOT_FS 4 #define BACKUP_IPC_SYS_DB 8 struct uokoo_firmware_update_header { unsigned char update_type[4]; unsigned char crc[4]; unsigned char compressed_update_size[4]; unsigned char decompressed_update_size[4]; unsigned char update_flag; unsigned char update_type_number; unsigned char padding; unsigned char hardware_version[2]; unsigned char padding[27]; }; The firmware update type is either HY01 or HY02. The HY01 type skips the hardware version check while the HY02 rejects updates that do not match the current firmware’s hardware version. The CRC field is logged server-side but never checked so it can be ignored. The update sizes are used to determine if the device has enough storage to apply the update. The server calls statfs on /mnt/mtd/ to determine the amount of free space it has. It then compares the amount of free space to the update header’s decompressed update size. If there’s not enough space left on the device, it rejects the update. I’d strongly recommend not fudging the decompressed update size because it could brick the device. The update flag is a bit field representing what parts of the device the firmware update will apply to. UPDATE_USER_BIN_AND_DB: Updates the user.bin and mtd_db.bin by flashing /var/user/user.bin to /dev/mtd3, /var/user/mtd_db.bin to /dev/mtd4, and /var/user/mtd_dbback.bin to /dev/mtd5. UPDATE_KERNEL: Updates the kernel by flashing /var/kernel/kernel.bin to /dev/mtd1. UPDATE_ROOT_FS: Updates the rootfs by flashing /var/rootfs/rootfs.bin to /dev/mtd2. BACKUP_IPC_SYS_DB: Creates a backup of the device’s /var/ipcsys.db database in /mnt/mtd/dbback. All other modifications are ignored. As I mentioned earlier, the hardware version is only checked if the update type is HY02. The hardware version can be seen from the device’s web interface in Set Up -&amp;gt; About -&amp;gt; System Firmware. The hardware version is between the first and second period. For example, in the image above the firmware version is 00.30.01.0049P4 so the hardware version would be the ASCII value 30. This firmware version is stored on the device in /mnt/mtd/etc/ipcversion. After the header is validated, the server responds with HY01. It then starts reading the firmware update in 0x400 byte chunks to /var/tmp_update.zip. The firmware update is expected to be in zip format, which is later unzipped in the root directory. If we send a firmware update that passes all the firmware update server’s checks, we get an arbitrary file write primitive! After the update server applies all updates, it reboots the device. The following snippet shows the server logs of a successful update, before rebooting, with the firmware upgrade zip containing pwn.txt. RCE and Persistence The easiest way to achieve RCE in this situation is to overwrite a file that later gets executed. Before we start looking for an executable to target, we need to know which filesystems are mounted with write permissions. [root@GM]# mount rootfs on / type rootfs (rw) /dev/root on / type squashfs (ro,relatime) tmpfs on /dev type tmpfs (rw,relatime,mode=755) tmpfs on /tmp type tmpfs (rw,relatime,mode=777) tmpfs on /var type tmpfs (rw,relatime,mode=755) tmpfs on /bin type tmpfs (rw,relatime,mode=755) tmpfs on /usr type tmpfs (rw,relatime,mode=755) tmpfs on /sbin type tmpfs (rw,relatime,mode=755) /dev/sys on /sys type sysfs (rw,relatime) none on /proc type proc (rw,relatime) devpts on /dev/pts type devpts (rw,relatime,mode=600,ptmxmode=000) tmpfs on /dev/shm type tmpfs (rw,relatime,size=49152k) /dev/mtdblock3 on /mnt/mtd type jffs2 (rw,relatime) /dev/mtdblock4 on /mnt/mtd/db type jffs2 (rw,relatime) /dev/mtdblock5 on /mnt/mtd/dbback type jffs2 (rw,relatime) tmpfs on /etc type tmpfs (rw,relatime,mode=755) Additionally, the file must be written to a filesystem that persists reboots because the device is rebooted immediately after the firmware update. Since the root directory is read-only and the tmpfs directories do not persist, our scope was limited to executables in the jffs2 directories. Initially, the vg_boot.sh script was an appealing target because it persisted modification and executed on boot. The downside was that it contained commands that were specific to the device model which would make porting the exploit a pain. I kept searching and eventually found the absolute best-case scenario in the middle of the /mnt/mtd/etc/start.sh script. filelist=`ls /mnt/mtd/etc/app` for file in $filelist do chmod +x /mnt/mtd/etc/app/$file /bin/sh /mnt/mtd/etc/app/$file &amp;amp; done It executes every file in /mnt/mtd/etc/app/ on boot, which is a directory that is writable and persists reboots! The full exploit chain would follow the steps: 1) Create a zip file with our executable payload in /mntd/mtd/etc/app/ 2) Use the default or exposed credentials to send the zip file as a firmware update 3) Wait for the firmware update server to reboot the device 4) /mnt/mtd/etc/start.sh gets executed on boot which then executes every file in /mnt/mtd/etc/app, including our payload! I’ve released an exploit on GitHub which sends a firmware update that writes dropbear to /mnt/mtd/etc/ and give us remote persistent access to the camera. Supported Devices Unsupported Devices Security Recommendations 1) Use a TLS connection between the client and server 2) Cryptographically sign the firmware updates and verify them before applying the update 3) Create device specific default credentials or force users to change the password after initial configuration">
+  
+  
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:site" content="0xf15h">
+  <meta name="twitter:title" content="Post-Auth RCE and Persistence on UOKOO Security Cameras">
+  <meta name="twitter:description" content="Recently, I haven’t been doing much reverse engineering at my day job, so I wanted to start a small side project that incorporates some reversing; security camera VR seemed like the perfect project...">
+  
+    <meta name="twitter:creator" content="0xf15h">
+  
+  
+
+  <link rel="dns-prefetch" href="https://fonts.gstatic.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css?family=Bitter:400,400i,700&display=swap" rel="stylesheet">
+
+  
+  <!-- Google Analytics -->
+  <script>
+    (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+    (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+    m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+    })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+    ga('create', 'UA-165056834-1', 'auto');
+    ga('send', 'pageview');
+
+  </script>
+
+
+</head>
+
+
+  <body>
+
+    <header class="site-header">
+
+  <div class="wrapper">
+
+    <a class="site-title" href="/">Hex Fish&#39;s Blog</a>
+
+    <nav class="site-nav">
+      
+        
+        <a class="page-link" href="/about/">About</a>
+      
+        
+        <a class="page-link" href="/archives/">Archives</a>
+      
+        
+        <a class="page-link" href="https://github.com/0xf15h">GitHub</a>
+      
+        
+        <a class="page-link" href="https://twitter.com/0xf15h">Twitter</a>
+      
+    </nav>
+
+  </div>
+
+</header>
+
+
+    <main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    
+      <h1 class="post-title" itemprop="name headline">Post-Auth RCE and Persistence on UOKOO Security Cameras</h1>
+    
+    <p class="post-meta"><time datetime="2020-11-17T00:00:00+00:00" itemprop="datePublished">Nov 17, 2020</time></p>
+  </header>
+
+  <div class="post-content" itemprop="articleBody">
+    <p>Recently, I haven’t been doing much reverse engineering at my day job, so I wanted to start a small side project that incorporates some reversing; security camera VR seemed like the perfect project. To avoid the devastation of finding a n-day, I specifically looked for devices that didn’t have any CVEs. Amazon’s top results for “security cameras” gave me an endless list of devices to pick from, so I chose the first option listed without CVEs, a UOKOO security camera.</p>
+
+<p><img src="/assets/uokoo/uokoo_amazon_ad.png" alt="UOKOO Amazon Ad" /></p>
+
+<h2>Getting User Credentials</h2>
+
+<p>The iSmartViewPro app is used to setup the WiFi connection, customize device settings, and flash the most recent firmware update. The instruction manual gives the device’s default credentials: <code class="highlighter-rouge">admin</code> as the username and <code class="highlighter-rouge">123456</code> or <code class="highlighter-rouge">888888</code> as the password. These credentials are used across all UOKOO cameras, and users aren’t required to change them during setup.</p>
+
+<p>After the device was configured, I <code class="highlighter-rouge">nmap</code>ed it and saw a server listening on port 80. Lo and behold, it was a HTTP web server prompting for device login credentials. Initially, I was disappointed that this <em>security</em> camera was ignorant of basic security practices, but after a quick glance in Wireshark, I was surprised to find it using digest access authentication (<a href="https://tools.ietf.org/html/rfc2617">RFC-2617</a>). This authentication scheme hashes the password concatenated with a server provided nonce before sending it over the network to prevent the server from receiving passwords in plaintext, while also mitigating replay attacks. According to the RFC, the authentication is supposed to take place inside a TLS connection to prevent MitM attacks. If a MitM sets the value of the <code class="highlighter-rouge">WWW-Authenticate</code> HTTP header in the server’s response to <code class="highlighter-rouge">Basic</code>, the user’s credentials will be sent in Base64 encoding which can easily be decoded.</p>
+
+<div style="display: flex; justify-content: center;">
+<blockquote class="imgur-embed-pub" lang="en" data-id="a/fzBLNb4" data-context="false"><a href="//imgur.com/a/fzBLNb4">UOKOO Security Camera Login MitM</a></blockquote><script async="" src="//s.imgur.com/min/embed.js" charset="utf-8"></script>
+</div>
+
+<p>I’m glad that the UOKOO developers at least attempted to secure their login page, as opposed to many of their competitors, even though in reality it wasn’t effective. Between the default credentials and the insecure login page, it’s not too difficult to get the login credentials, which we’ll use later…</p>
+
+<h2>Getting a Shell</h2>
+
+<p>Before I started reversing, I wanted to get a shell on the device so I could read logs, debug programs, and send files to/from the device. Most IoT devices expose a serial port on the PCB that drops clients directly into a shell, so I thought I should give that a try. When the front cover of the camera is removed, the PCB presents silkscreen labeled UART pads. This saved me a few minutes of prodding around with a multimeter.</p>
+
+<p><img src="/assets/uokoo/uokoo_board_small.jpg" alt="UOKOO PCB" /></p>
+
+<p>Sorry about the blurry image, I apparently don’t know how to focus an iPhone camera.</p>
+
+<p>After I soldered some wires onto the pads, I used devttys0’s baudrate brute force script to find the <code class="highlighter-rouge">115200 bps</code> baud rate. Once connected, the serial connection dropped me into a root shell—as is tradition.</p>
+
+<h2>Attack Surface Enumeration</h2>
+
+<p>Using the root shell, <code class="highlighter-rouge">netstat -plnt</code> showed me which programs were listening for a remote connection.</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name
+tcp        0      0 0.0.0.0:65531           0.0.0.0:*               LISTEN      360/FWUpdateSvr
+tcp        0      0 127.0.0.1:10080         0.0.0.0:*               LISTEN      407/hyrtspd
+tcp        0      0 0.0.0.0:554             0.0.0.0:*               LISTEN      407/hyrtspd
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      407/hyrtspd
+</code></pre></div></div>
+
+<p>As you can see, our attack surface was rather small because it’s a pretty dumb device. Both processes had obvious roles, given their names: <code class="highlighter-rouge">FWUpdateSvr</code> is the firmware update server and <code class="highlighter-rouge">hyrtspd</code> is a RTSP daemon. If you look closely, the <code class="highlighter-rouge">hyrtspd</code> program is listening on port <code class="highlighter-rouge">80</code>, which means it’s also the HTTP server we looked at earlier.</p>
+
+<h2>Firmware Update Protocol</h2>
+
+<p>I decided to reverse engineer the firmware update server’s update protocol before the RTSP daemon because I knew it would parse a significant amount of unsanitized data. There are two different ways to approach this:</p>
+
+<p>1) Reverse the iSmartViewPro Android app’s firmware update functionality
+2) Reverse the server-side firmware update parsing and create your own update from scratch</p>
+
+<p>Reversing the Android app sounded super boring because I wanted to reverse some native code, not decompiled Java bytecode. If I wanted a PoC ASAP, I would have opted for the app reversing but this project is all about having fun.</p>
+
+<p>The update servers is a small 15 kB stripped C++ program written by the developer that goes by the alias <code class="highlighter-rouge">PETER.PAN</code>, according to the startup banner.</p>
+
+<p><img src="/assets/uokoo/uokoo_firmware_update_banner.png" alt="Firmware Update Banner" /></p>
+
+<p>As shown in the <code class="highlighter-rouge">netstat</code> output, the server listens on port <code class="highlighter-rouge">65531</code> for the authentication message.</p>
+
+<pre><code class="language-C">struct uokoo_firmware_update_authentication_message
+{
+    unsigned char unknown[4];
+    unsigned char username[32];
+    unsigned char password[32];
+};
+</code></pre>
+
+<p>The username and password are send in plaintext, which means a passive MitM can get the credentials. Now we have three vectors to expose login credentials:</p>
+
+<p>1) Use the default username and password
+2) MitM the login request
+3) Passively MitM a firmware update</p>
+
+<p>When the server accepts a connection, it immediately creates a CDBManager object (implemented in the <code class="highlighter-rouge">libdbmanager.so</code> library) which opens a connection to the <code class="highlighter-rouge">/var/db/ipcsys.db</code> SQLite database. It then calls the CDBManager’s QryUserInfoFromDBByID method which executes the follow SQL query:</p>
+
+<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code> <span class="k">SELECT</span> <span class="n">C_UserName</span><span class="p">,</span> <span class="n">c_role_id</span><span class="p">,</span> <span class="n">C_PassWord</span><span class="p">,</span> <span class="n">c_role_name</span> <span class="k">FROM</span> <span class="n">v_user_role_detail</span> <span class="k">WHERE</span> <span class="n">C_UserID</span><span class="o">=%</span><span class="n">d</span>
+</code></pre></div></div>
+
+<p>The <code class="highlighter-rouge">C_UserID</code> field is set to 10001, which is the user ID of the admin user. The QryUserInfoFromDBByID method returns a response in an <code class="highlighter-rouge">USERINFOQRY</code> structure:</p>
+
+<pre><code class="language-C">struct USERINFOQRY
+{
+    uint32_t user_id;   // Not set in this query
+    uint64_t role_id;   // From the c_role_id field
+    char username[32];  // From the C_UserName field
+    char password[32];  // From the C_PassWord field
+    uint32_t role_name; // From the c_role_name field
+};
+</code></pre>
+
+<p>The server <code class="highlighter-rouge">strcmp</code> compares the username and password fields from the firmware update’s authentication messages with the <code class="highlighter-rouge">C_UserID</code> and <code class="highlighter-rouge">C_PassWord</code> credentials from the database.</p>
+
+<p><img src="./images/auth_message_check.png" alt="" /></p>
+
+<p>If both usernames and passwords match, the client is authenticated and the server returns <code class="highlighter-rouge">HY01</code> to denote successful authentication. The client then sends the firmware update header.</p>
+
+<pre><code class="language-C">// Bit mask for the firmware update header's update flag
+#define UPDATE_USER_BIN_AND_DB 1
+#define UPDATE_KERNEL          2
+#define UPDATE_ROOT_FS         4
+#define BACKUP_IPC_SYS_DB      8
+
+struct uokoo_firmware_update_header
+{
+    unsigned char update_type[4];
+    unsigned char crc[4];
+    unsigned char compressed_update_size[4];
+    unsigned char decompressed_update_size[4];
+    unsigned char update_flag;
+    unsigned char update_type_number;
+    unsigned char padding;
+    unsigned char hardware_version[2];
+    unsigned char padding[27];
+};
+</code></pre>
+
+<p>The firmware update type is either <code class="highlighter-rouge">HY01</code> or <code class="highlighter-rouge">HY02</code>. The <code class="highlighter-rouge">HY01</code> type skips the hardware version check while the <code class="highlighter-rouge">HY02</code> rejects updates that do not match the current firmware’s hardware version.</p>
+
+<p>The CRC field is logged server-side but never checked so it can be ignored.</p>
+
+<p>The update sizes are used to determine if the device has enough storage to apply the update. The server calls <code class="highlighter-rouge">statfs</code> on <code class="highlighter-rouge">/mnt/mtd/</code> to determine the amount of free space it has. It then compares the amount of free space to the update header’s decompressed update size. If there’s not enough space left on the device, it rejects the update. I’d strongly recommend not fudging the decompressed update size because it could brick the device.</p>
+
+<p>The update flag is a bit field representing what parts of the device the firmware update will apply to.</p>
+
+<ul>
+  <li><code class="highlighter-rouge">UPDATE_USER_BIN_AND_DB</code>: Updates the <code class="highlighter-rouge">user.bin</code> and <code class="highlighter-rouge">mtd_db.bin</code> by flashing <code class="highlighter-rouge">/var/user/user.bin</code> to <code class="highlighter-rouge">/dev/mtd3</code>, <code class="highlighter-rouge">/var/user/mtd_db.bin</code> to <code class="highlighter-rouge">/dev/mtd4</code>, and <code class="highlighter-rouge">/var/user/mtd_dbback.bin</code> to <code class="highlighter-rouge">/dev/mtd5</code>.</li>
+  <li><code class="highlighter-rouge">UPDATE_KERNEL</code>: Updates the kernel by flashing <code class="highlighter-rouge">/var/kernel/kernel.bin</code> to <code class="highlighter-rouge">/dev/mtd1</code>.</li>
+  <li><code class="highlighter-rouge">UPDATE_ROOT_FS</code>: Updates the <code class="highlighter-rouge">rootfs</code> by flashing <code class="highlighter-rouge">/var/rootfs/rootfs.bin</code> to <code class="highlighter-rouge">/dev/mtd2</code>.</li>
+  <li><code class="highlighter-rouge">BACKUP_IPC_SYS_DB</code>: Creates a backup of the device’s <code class="highlighter-rouge">/var/ipcsys.db</code> database in <code class="highlighter-rouge">/mnt/mtd/dbback</code>. All other modifications are ignored.</li>
+</ul>
+
+<p>As I mentioned earlier, the hardware version is only checked if the update type is <code class="highlighter-rouge">HY02</code>. The hardware version can be seen from the device’s web interface in <code class="highlighter-rouge">Set Up</code> -&gt; <code class="highlighter-rouge">About</code> -&gt; <code class="highlighter-rouge">System Firmware</code>.</p>
+
+<p><img src="/assets/uokoo/uokoo_firmware_version.png" alt="Firmware Version" /></p>
+
+<p>The hardware version is between the first and second period. For example, in the image above the firmware version is <code class="highlighter-rouge">00.30.01.0049P4</code> so the hardware version would be the ASCII value <code class="highlighter-rouge">30</code>. This firmware version is stored on the device in <code class="highlighter-rouge">/mnt/mtd/etc/ipcversion</code>.</p>
+
+<p>After the header is validated, the server responds with <code class="highlighter-rouge">HY01</code>. It then starts reading the firmware update in 0x400 byte chunks to <code class="highlighter-rouge">/var/tmp_update.zip</code>. The firmware update is expected to be in zip format, which is later unzipped in the root directory.</p>
+
+<p><img src="/assets/uokoo/uokoo_unpack_update.png" alt="Unpack Update" /></p>
+
+<p>If we send a firmware update that passes all the firmware update server’s checks, we get an arbitrary file write primitive! After the update server applies all updates, it reboots the device. The following snippet shows the server logs of a successful update, before rebooting, with the firmware upgrade zip containing pwn.txt.</p>
+
+<style type="text/css">
+  .gist-data {max-height: 450px;}
+</style>
+
+<script src="https://gist.github.com/0xf15h/9815e15ecf0451065c79d4d3c2f5ef65.js"></script>
+
+<h2>RCE and Persistence</h2>
+
+<p>The easiest way to achieve RCE in this situation is to overwrite a file that later gets executed. Before we start looking for an executable to target, we need to know which filesystems are mounted with write permissions.</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>[root@GM]# mount
+rootfs on / type rootfs (rw)
+/dev/root on / type squashfs (ro,relatime)
+tmpfs on /dev type tmpfs (rw,relatime,mode=755)
+tmpfs on /tmp type tmpfs (rw,relatime,mode=777)
+tmpfs on /var type tmpfs (rw,relatime,mode=755)
+tmpfs on /bin type tmpfs (rw,relatime,mode=755)
+tmpfs on /usr type tmpfs (rw,relatime,mode=755)
+tmpfs on /sbin type tmpfs (rw,relatime,mode=755)
+/dev/sys on /sys type sysfs (rw,relatime)
+none on /proc type proc (rw,relatime)
+devpts on /dev/pts type devpts (rw,relatime,mode=600,ptmxmode=000)
+tmpfs on /dev/shm type tmpfs (rw,relatime,size=49152k)
+/dev/mtdblock3 on /mnt/mtd type jffs2 (rw,relatime)
+/dev/mtdblock4 on /mnt/mtd/db type jffs2 (rw,relatime)
+/dev/mtdblock5 on /mnt/mtd/dbback type jffs2 (rw,relatime)
+tmpfs on /etc type tmpfs (rw,relatime,mode=755)
+</code></pre></div></div>
+
+<p>Additionally, the file must be written to a filesystem that persists reboots because the device is rebooted immediately after the firmware update. Since the root directory is read-only and the <code class="highlighter-rouge">tmpfs</code> directories do not persist, our scope was limited to executables in the <code class="highlighter-rouge">jffs2</code> directories. Initially, the <code class="highlighter-rouge">vg_boot.sh</code> script was an appealing target because it persisted modification and executed on boot. The downside was that it contained commands that were specific to the device model which would make porting the exploit a pain. I kept searching and eventually found the absolute best-case scenario in the middle of the <code class="highlighter-rouge">/mnt/mtd/etc/start.sh</code> script.</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">filelist</span><span class="o">=</span><span class="sb">`</span><span class="nb">ls</span> /mnt/mtd/etc/app<span class="sb">`</span>
+<span class="k">for </span>file <span class="k">in</span> <span class="nv">$filelist</span>
+<span class="k">do
+ </span><span class="nb">chmod</span> +x /mnt/mtd/etc/app/<span class="nv">$file</span>
+ /bin/sh /mnt/mtd/etc/app/<span class="nv">$file</span> &amp;
+<span class="k">done</span>
+</code></pre></div></div>
+
+<p>It executes every file in <code class="highlighter-rouge">/mnt/mtd/etc/app/</code> on boot, which is a directory that is writable and persists reboots! The full exploit chain would follow the steps:</p>
+
+<p>1) Create a zip file with our executable payload in <code class="highlighter-rouge">/mntd/mtd/etc/app/</code><br />
+2) Use the default or exposed credentials to send the zip file as a firmware update<br />
+3) Wait for the firmware update server to reboot the device<br />
+4) <code class="highlighter-rouge">/mnt/mtd/etc/start.sh</code> gets executed on boot which then executes every file in <code class="highlighter-rouge">/mnt/mtd/etc/app</code>, including our payload!</p>
+
+<p>I’ve released an exploit on GitHub which sends a firmware update that writes <code class="highlighter-rouge">dropbear</code> to <code class="highlighter-rouge">/mnt/mtd/etc/</code> and give us remote persistent access to the camera.</p>
+
+<h2>Supported Devices</h2>
+
+<p><img src="/assets/uokoo/working_1.jpg" alt="" /></p>
+
+<p><img src="/assets/uokoo/working_2.jpg" alt="" /></p>
+
+<p><img src="/assets/uokoo/working_3.jpg" alt="" /></p>
+
+<h2>Unsupported Devices</h2>
+
+<p><img src="/assets/uokoo/not_working_1.jpg" alt="" /></p>
+
+<p><img src="/assets/uokoo/not_working_2.jpg" alt="" /></p>
+
+<h2>Security Recommendations</h2>
+
+<p>1) Use a TLS connection between the client and server<br />
+2) Cryptographically sign the firmware updates and verify them before applying the update<br />
+3) Create device specific default credentials or force users to change the password after initial configuration</p>
+
+  </div>
+
+  
+
+</article>
+
+      </div>
+    </main>
+
+    <footer class="site-footer">
+
+  <div class="wrapper">
+
+    <p>
+      
+
+&copy; Hex Fish - Powered by <a href="https://jekyllrb.com">Jekyll</a> &amp; <a href="https://github.com/yous/whiteglass">whiteglass</a> - Subscribe via <a href="https://0xf15h.github.io/feed.xml">RSS</a>
+
+    </p>
+
+  </div>
+
+</footer>
+
+
+  </body>
+
+</html>
