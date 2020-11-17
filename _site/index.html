@@ -160,7 +160,7 @@ tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      
 
 <p>I decided to reverse engineer the firmware update server’s update protocol before the RTSP daemon because I knew it would parse a significant amount of unsanitized data. There are two different ways to approach this:</p>
 
-<p>1) Reverse the iSmartViewPro Android app’s firmware update functionality
+<p>1) Reverse the iSmartViewPro Android app’s firmware update functionality<br />
 2) Reverse the server-side firmware update parsing and create your own update from scratch</p>
 
 <p>Reversing the Android app sounded super boring because I wanted to reverse some native code, not decompiled Java bytecode. If I wanted a PoC ASAP, I would have opted for the app reversing but this project is all about having fun.</p>
@@ -301,7 +301,7 @@ tmpfs on /etc type tmpfs (rw,relatime,mode=755)
 3) Wait for the firmware update server to reboot the device<br />
 4) <code class="highlighter-rouge">/mnt/mtd/etc/start.sh</code> gets executed on boot which then executes every file in <code class="highlighter-rouge">/mnt/mtd/etc/app</code>, including our payload!</p>
 
-<p>I’ve released an exploit on GitHub which sends a firmware update that writes <code class="highlighter-rouge">dropbear</code> to <code class="highlighter-rouge">/mnt/mtd/etc/</code> and give us remote persistent access to the camera.</p>
+<p>I’ve released the exploit <a href="https://github.com/0xf15h/uokoo_exploit">here</a> on GitHub which sends a firmware update that writes <code class="highlighter-rouge">dropbear</code> to <code class="highlighter-rouge">/mnt/mtd/etc/</code> and give us remote persistent access to the camera.</p>
 
 <h2>Supported Devices</h2>
 
