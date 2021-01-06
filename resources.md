@@ -39,7 +39,12 @@ This page lists resources that I've found helpful in the past.
 	- [https://www.hindawi.com/journals/scn/2017/4121765/]()
 	- [https://web.archive.org/web/20201227163141if_/https://www.hindawi.com/journals/scn/2017/4121765/]()
 
-### Samsung's Linux Kernel Mitigations
+### Samsung's Mitigations
+
+- [2020] A Samsung RKP Compendium
+	- Pretty much lifts Samsung's hypervisor (called uh) to C and walks through it. It also describes a patched vulnerabities to get EL2 read/write.
+	- https://www.longterm.io/samsung_rkp.html
+	- https://web.archive.org/web/20210106020249/https://www.longterm.io/samsung_rkp.html
 
 - [2017] Defeating Samsung KNOX with Zero Privilege
 	- Describes bypassing Samsung's KNOX mitigations using CVE-2016-6787.
