@@ -70,9 +70,9 @@ struct uokoo_firmware_update_authentication_message
 
 The username and password are send in plaintext, which means a passive MitM can get the credentials. Now we have three vectors to expose login credentials:
 
-1) Use the default username and password
-2) MitM the login request
-3) Passively MitM a firmware update
+1) Use the default username and password  
+2) MitM the login request  
+3) Passively MitM a firmware update  
 
  When the server accepts a connection, it immediately creates a CDBManager object (implemented in the `libdbmanager.so` library) which opens a connection to the `/var/db/ipcsys.db` SQLite database. It then calls the CDBManager's QryUserInfoFromDBByID method which executes the follow SQL query:
 
