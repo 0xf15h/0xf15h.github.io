@@ -95,7 +95,7 @@ struct USERINFOQRY
 
  The server `strcmp` compares the username and password fields from the firmware update's authentication messages with the `C_UserID` and `C_PassWord` credentials from the database.
 
-![](./images/auth_message_check.png)
+![](/assets/uokoo/auth_message_check.png)
 
  If both usernames and passwords match, the client is authenticated and the server returns `HY01` to denote successful authentication. The client then sends the firmware update header.
 
