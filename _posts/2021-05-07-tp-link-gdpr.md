@@ -74,113 +74,86 @@ The AES key and IV are generated at different times and have different 3 bytes o
 
 The first block of ciphertext c0 is decrypted into an intermediary value c0′. The c0′ value must be XORed with the IV before revealing the plaintext. After viewing several different login messages, notice that the first 16 bytes (AES block size) are always the same: `8\r\n[/cgi/login#0`. If we take this know plaintext value and XOR it with c0′, it'll reveal the IV. If the top 10 bytes of the calculated IV match the top 10 bytes of the brute forced key, which are the Unix Epoch timestamps down to the second, both the AES key and IV have been found. Using this method, an attacker only needs to brute force the AES key space in O(n) time because the IV check can be done in a constant O(1) check. I've written a Scapy script that parses a PCAP to find the login request, gets the packet timestamp, then cracks the AES key and IV to reveal the credentials in plaintext [[link]]().
 
-
 ### Default RSA Key
 
-- The RSA public/private key-pair are generated on the first `/cgi/getParm` request
-- The http_rsa_getPubKey function calls generate_rsa_private_key if the global RSA n value has not been generated yet
+The RSA public/private key-pair are generated on the first `/cgi/getParm` request. The `http_rsa_getPubKey` function calls `generate_rsa_private_key` if the global RSA n value has not been generated yet.
+
 ![](/assets/tp_link_gdpr/tp_link_gen_rsa_keys.png)
-- This generate_rsa_private_key function allocates buffers for the RSA n, e, and d hex strings
+
+This generate_rsa_private_key function allocates buffers for the RSA n, e, and d hex strings.
+
 ![](/assets/tp_link_gdpr/tp_link_gen_rsa_private_key.png)
-- If any hex string malloc fails, -1 is returned
-- In http_rsa_getPubKey, if -1 is returned from generate_rsa_private_key it will fallback to hardcoded values in the .data section
-- Ideally, an attacker would attempt to control the size of the malloc but it's hardcoded to a relatively small value
-- Given this constraint, an attacker can still cause the default keys to be used given two conditions
-1) Remotely control when a buffer is malloced and free across any service on the router (e.g. UPnP, HTTP, CWMP, SSH)
+
+If any hex string malloc fails, -1 is returned. In `http_rsa_getPubKey`, if -1 is returned from `generate_rsa_private_key` it will fallback to hardcoded values in the .data section. Ideally, an attacker would attempt to control the size of the malloc but it's hardcoded to a relatively small value. Given this constraint, an attacker can still cause the default keys to be used given two conditions.
+
+1) Remotely control when a buffer is malloced and free across any service on the router (e.g. UPnP, HTTP, CWMP, SSH)  
 2) The `/cgi/getParm` endpoint has not been requested since the device booted
-- Assuming an attacker satisfies both requirements, they could put the router into a state that would cause subsequent mallocs to fail by issuing many requests that call malloc without freeing until a later time
-- The attacker would then make a request to the `/cgi/getParm` endpoint and cause the device to set the global public/private key-pair to the known default keys
-- These hardcoded keys would persist until the device is rebooted
-- The attacker would free the previously allocated buffers, restoring the router to state where mallocs succeed
-- Now whenever a legitimate user authenticates with the router, the attacker could decrypt the sign field and expose the AES key and IV
-- The key and IV would then be used to decrypt the data field and expose the login credentials in plaintext
+
+Assuming an attacker satisfies both requirements, they could put the router into a state that would cause subsequent mallocs to fail by issuing many requests that call malloc without freeing until a later time. The attacker would then make a request to the `/cgi/getParm` endpoint and cause the device to set the global public/private key-pair to the known default keys. These hardcoded keys would persist until the device is rebooted. The attacker would free the previously allocated buffers, restoring the router to state where mallocs succeed. Now whenever a legitimate user authenticates with the router, the attacker could decrypt the sign field and expose the AES key and IV. The key and IV would then be used to decrypt the data field and expose the login credentials in plaintext.
 
 ### RSA without Padding
 
-- The sign field of the `/cgi_gdpr` requests use RSA without padding so the ciphertext is deterministic
-- If the same messages is encrypted twice by the same RSA public key, it produces the same ciphertext each time
-- Given TP-Link's authentication implementation and deterministic RSA, an attacker can ultimately create an offline password cracker
+The sign field of the `/cgi_gdpr` requests use RSA without padding so the ciphertext is deterministic. If the same messages is encrypted twice by the same RSA public key, it produces the same ciphertext each time. Given TP-Link's authentication implementation and deterministic RSA, an attacker can ultimately create an offline password cracker.
 
-- RSA can only encrypt a relatively small input
-- E.g. 128 byte input, excluding padding, for a 1024-bit key
-- TP-Link encrypted larger messages by breaking the input into 64 byte blocks and padding the last block with null bytes
-- Let's look at an example of an `/cgi_gdpr` request's sign field
+RSA can only encrypt a relatively small input, e.g. 128 byte input, excluding padding, for a 1024-bit key. TP-Link encrypted larger messages by breaking the input into 64 byte blocks and padding the last block with null bytes. Let's look at an example of an `/cgi_gdpr` request's sign field.
+
 ```text
 key=1617857002547232&iv=1617857002547416&h=bb0f7e021d52a4e31613d463fc0525d8&s=271058692
 ```
-- The key and IV will always be 16 characters long because each character is a byte and the AES block size is 16 bytes
-- The authentication hash will always be 32 characters long because it's a hex string, where each character represents 4 bits of the 16 byte hash
-- The sequence can vary slightly in length, but it's known to a passive observer
-- TP-Link would break this example into into 64 byte blocks like so
+
+The key and IV will always be 16 characters long because each character is a byte and the AES block size is 16 bytes. The authentication hash will always be 32 characters long because it's a hex string, where each character represents 4 bits of the 16 byte hash. The sequence can vary slightly in length, but it's known to a passive observer. TP-Link would break this example into into 64 byte blocks like so:
+
 ```Python
 rsa_blocks[0] = "key=1617857002547232&iv=1617857002547416&h=bb0f7e021d52a4e31613d"
 rsa_blocks[1] = "463fc0525d8&s=271058692"
 ```
-- An attacker could not feasibly attempt offline hash cracking on the first block unless they know the key and IV
-- The second block is a different case because it only contains part of the authentication hash and the sequence
-- The sequence field can be calculated by a passive observer: the sequence value returned by the `/cgi/getParm` request plus the length of the Base64 encoded data field in the subsequent `/cgi_gdpr` request
-- This means the attacker would only be guessing at the last 44 bits of the MD5 hash which is perfect for offline hash cracking
-- An attacker would know that they've cracked the password when the ciphertext produced by their guess matches the ciphertext from the original sign field
+
+An attacker could not feasibly attempt offline hash cracking on the first block unless they know the key and IV. The second block is a different case because it only contains part of the authentication hash and the sequence. The sequence field can be calculated by a passive observer: the sequence value returned by the `/cgi/getParm` request plus the length of the Base64 encoded data field in the subsequent `/cgi_gdpr` request. This means the attacker would only be guessing at the last 44 bits of the MD5 hash which is perfect for offline hash cracking. An attacker would know that they've cracked the password when the ciphertext produced by their guess matches the ciphertext from the original sign field.
+
 ```Python
 rsa_blocks[1] == rsa_encrypt(md5("admin" + <password_guess>)[-11:] + "&s=" + sequence)
 ```
-- The admin string comes from the hardcoded username, described in the authentication protocol section
-- I've written an offline hash crack proof of concept for this example [here]()
+
+The admin string comes from the hardcoded username, described in the authentication protocol section. I've written an offline hash crack proof of concept for this example [[link]]().
 
 ### Replay Attack
 
-- When `/getParm` is requested, a new global sequence number is generated server-side by taking a random 4 byte value, from `/dev/urandom`, modulo 0x40000000
-- The sequence number is returned to the client
-- The client must put the sequence field in every `/cgi_gdpr` request's sign field, as an attempt to add entropy to the RSA encryption
-- When the user attempts a login, it will recalculate the sequence number: the server's global sequence value plus the length, derived from strlen, of the Base64 encoded data field
-- An attacker can modify the sequence value by increasing the length of the Base64 encoded data
-- Adding bytes to encoded and encrypted data can lead to data corruption which will cause the decode or decrypt to fail
-- Additionally, given the replay attack model, an attacker does not have the key to legitimately increase the data length
-- Luckily, TP-Link implemented their own Base64 decode which recalculates the string length
+When `/getParm` is requested, a new global sequence number is generated server-side by taking a random 4 byte value, from `/dev/urandom`, modulo 0x40000000. The sequence number is returned to the client with the RSA e and n values. The client must put the sequence field in every `/cgi_gdpr` request's sign field, as an attempt to add entropy to the RSA encryption. When the user attempts a login, it will recalculate the sequence number: the server's global sequence value plus the length, derived from strlen, of the Base64 encoded data field. An attacker can modify the sequence value by increasing the length of the Base64 encoded data. Adding bytes to encoded and encrypted data can lead to data corruption which will cause the decode or decrypt to fail. Additionally, given the replay attack model, an attacker does not have the key to legitimately increase the data length. Luckily, TP-Link implemented their own Base64 decode which recalculates the string length.
+
 ![](/assets/tp_link_gdpr/tp_link_b64_decode.png)
-- As shown in the decompiled snippet from Ghidra, it truncates the string by either the min value of strlen or the first space character it sees (hex character 0x20)
-- An attacker could keep requesting `/getParm` until a sequence number that is slightly less than the previous sequence number
-- The attacker could then send the previous login request from a legitimate user with the same sign and data fields, but add space characters after the Base64 data until the sequence number matches the previous sequence number
-- The router will call strlen of the Base64 data and add it to the server's global sequence number to calculate the expected sequence number
-- The web server will RSA decrypt the sign field and verify the authentication hash (which the attacker still does not know) and the sequence field
-- Both checks will succeed
-- When the server later Base64 decodes the data field, it will ignore the space characters used to increase the data length and sequence value
+
+As shown in the decompiled snippet from Ghidra, it truncates the string by either the min value of strlen or the first space character it sees (hex character 0x20). An attacker could keep requesting `/getParm` until a sequence number that is slightly less than the previous sequence number. The attacker could then send the previous login request from a legitimate user with the same sign and data fields, but add space characters after the Base64 data until the sequence number matches the previous sequence number. The router will call strlen of the Base64 data and add it to the server's global sequence number to calculate the expected sequence number. The web server will RSA decrypt the sign field and verify the authentication hash (which the attacker still does not know) and the sequence field. Both checks will succeed. When the server later Base64 decodes the data field, it will ignore the space characters used to increase the data length and sequence value.
 
 ### Padding Oracle
 
-- In the aes_tmp_decrypt_buf_nopadding_new function in libgdpr.so, the remove_padding function returns the number of padding bytes
-- The web client uses PKCS7 padding, which repeats the number of padding bytes as padding (e.g. 7 padding bytes would be `\x07\x07\x07\x07\x07\x07\x07`)
-- The function gets the last byte, ensures it's less than or equal to the block size, then returns it
-- Note that it does not verify that the previous bytes are equal to the padding value
-- Additionally, if the remove_padding function fails and returns -1, it will not return a unique failure (i.e. no oracle) and will continue and fail during later parsing
+In the `aes_tmp_decrypt_buf_nopadding_new` function in libgdpr.so, the remove_padding function returns the number of padding bytes. The web client uses PKCS7 padding, which repeats the number of padding bytes as padding (e.g. 7 padding bytes would be `\x07\x07\x07\x07\x07\x07\x07`). The function gets the last byte, ensures it's less than or equal to the block size, then returns it. Note that it does not verify that the previous bytes are equal to the padding value. Additionally, if the remove_padding function fails and returns -1, it will not return a unique failure (i.e. no oracle) and will continue and fail during later parsing.
 
 ![](/assets/tp_link_gdpr/tp_link_no_padding_oracle.png)
 
-- Shout out to the TP-Link developers; this is a tricky one to remember!
+Shout out to the TP-Link developers; this is a tricky one to remember!
 
 ## We have creds! Now what?
 
 Let's assume an attacker now has the login credentials by leveraging one of the three vulnerabilities described above:
 
-1) Brute forcing the AES key and IV based on the time the login request was sent
-2) Hash cracking the password in the sign field of the `/cgi_gdpr` request
+1) Brute forcing the AES key and IV based on the time the login request was sent  
+2) Hash cracking the password in the sign field of the `/cgi_gdpr` request  
 3) Exhausting system memory before `/cgi/getParm` was requested, causing the router to default to hardcoded RSA keys
 
-- Our attack surface has vastly increased because post-auth request handlers are now reachable
-- After playing around with the web interface for a bit, I found that the router allows users to backup and restore their device configuration
-- The configuration restore is an interesting attack surface because the web server will have to parse a lot of attacker controlled data
-- I backed up a my current device config to see how the file is formatted, but it was encrypted
+Our attack surface has vastly increased because post-auth request handlers are now reachable. After playing around with the web interface for a bit, I found that the router allows users to backup and restore their device configuration. The configuration restore is an interesting attack surface because the web server will have to parse a lot of attacker controlled data. I backed up a my current device config to see how the file is formatted, but it was encrypted.
+
 ![](/assets/tp_link_gdpr/tp_link_binwalk_entropy.png)
-- To understand how the config was encrypted, I looked at the web servers handler function for the `/cgi/confencode` endpoint
-- The handler function used DES encryption with a hardcoded key in libcmm.so
+
+To understand how the config was encrypted, I looked at the web servers handler function for the `/cgi/confencode` endpoint. The handler function used DES encryption with a hardcoded key in libcmm.so.
+
 ![](/assets/tp_link_gdpr/tp_link_hard_coded_des_key.png)
-- Using this key, we can decrypt the config file and see the giant XML config
-- I wanted to see if I was the only researcher who was looking at this attack surface so I Googled the hardcoded key
-- It turns out that I wasn't alone
+
+Using this key, we can decrypt the config file and see the giant XML config. I wanted to see if I was the only researcher who was looking at this attack surface so I Googled the hardcoded key. It turns out that I wasn't alone.
+
 ![](/assets/tp_link_gdpr/tp_link_config_key_google.png)
-- The [tpconf_bin_xml](https://github.com/sta-c0000/tpconf_bin_xml) GitHub repository handles the encryption/decryption and compression/decompression of TP-Link config files
-- It also describes a command injection vulnerability found in the Description field in the DeviceInfo section
-- It was developed for the TP-Link TD-W9970, but I gave it a try on the Archer C20 and it worked!
+
+The tpconf_bin_xml GitHub repository handles the encryption/decryption and compression/decompression of TP-Link config files [[link]](https://github.com/sta-c0000/tpconf_bin_xml). It also describes a command injection vulnerability found in the Description field in the DeviceInfo section. It was developed for the TP-Link TD-W9970, but I gave it a try on the Archer C20 and it worked!
+
 ```bash
 # Downloaded the current config as ArcherC20V520121442010n.bin
 python3 tpconf_bin_xml.py -l ArcherC20V520121442010n.bin ArcherC20V520121442010n.xml
@@ -193,20 +166,20 @@ python3 tpconf_bin_xml.py -l ArcherC20V520121442010n.bin ArcherC20V520121442010n
 # 
 # After
 #
-# <Description val="AC750 Wireless Dual Band Router`ping 192.168.0.100`" />
+# <Description val="AC750 Wireless Dual Band Router`telnetd -p 1023 -l login` " />
 python3 tpconf_bin_xml.py -l ArcherC20V520121442010n.xml ArcherC20V520121442010n.payload.bin
 # Then using the web interface, restore the ArcherC20V520121442010n.payload.bin config
 telnet 192.168.0.1 1023
 # Username: admin
 # Password: 1234
 ```
-- Now we have a remote root shell!
-- It's pretty depressing that this n-day has been on GitHub for three years and still isn't patched on firmware that was updated on 1/27/2021
-- I hope TP-Link eventually gets around to patching it across any or all device models
+
+Now we have a remote root shell! It's pretty depressing that this n-day has been on GitHub for three years and still isn't patched on firmware that was updated on 1/27/2021. I hope TP-Link eventually gets around to patching it across any or all device models.
 
 ## Security Recommendations
 
-### Default RSA Key
-
-- Generate the RSA public/private key-pair during httpd initialization, which will occur on boot
-- If any malloc in generate_rsa_private_key fails, consider it an unrecoverable error and force httpd to exit
+- Use cryptographically strong entropy from a crypto API when generating AES keys [[link]](https://developer.mozilla.org/en-US/docs/Web/API/Crypto)
+- Generate the RSA public/private key-pair during the web server initialization on boot. If any malloc in `generate_rsa_private_key` fails, consider it an unrecoverable error and force the web server to exit.
+- Use PKCS#1 padding when using RSA
+- Do not modify the sequence entropy value to mitigate replay attacks
+- Patch open source n-days
