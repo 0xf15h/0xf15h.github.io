@@ -167,8 +167,8 @@ tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      
 
 <p>The username and password are send in plaintext, which means a passive MitM can get the credentials. Now we have three vectors to expose login credentials:</p>
 
-<p>1) Use the default username and password
-2) MitM the login request
+<p>1) Use the default username and password<br />
+2) MitM the login request<br />
 3) Passively MitM a firmware update</p>
 
 <p>When the server accepts a connection, it immediately creates a CDBManager object (implemented in the <code class="highlighter-rouge">libdbmanager.so</code> library) which opens a connection to the <code class="highlighter-rouge">/var/db/ipcsys.db</code> SQLite database. It then calls the CDBManager’s QryUserInfoFromDBByID method which executes the follow SQL query:</p>
@@ -190,7 +190,7 @@ tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      
 
 <p>The server <code class="highlighter-rouge">strcmp</code> compares the username and password fields from the firmware update’s authentication messages with the <code class="highlighter-rouge">C_UserID</code> and <code class="highlighter-rouge">C_PassWord</code> credentials from the database.</p>
 
-<p><img src="./images/auth_message_check.png" alt="" /></p>
+<p><img src="/assets/uokoo/auth_message_check.png" alt="" /></p>
 
 <p>If both usernames and passwords match, the client is authenticated and the server returns <code class="highlighter-rouge">HY01</code> to denote successful authentication. The client then sends the firmware update header.</p>
 
