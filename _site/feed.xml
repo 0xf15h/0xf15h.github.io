@@ -3,10 +3,10 @@
   <generator uri="http://jekyllrb.com" version="4.0.0">Jekyll</generator>
   
   
-  <link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" />
-  <link href="http://localhost:4000/" rel="alternate" type="text/html" hreflang="en" />
-  <updated>2021-05-10T04:37:08+00:00</updated>
-  <id>http://localhost:4000//</id>
+  <link href="https://0xf15h.github.io/feed.xml" rel="self" type="application/atom+xml" />
+  <link href="https://0xf15h.github.io/" rel="alternate" type="text/html" hreflang="en" />
+  <updated>2021-05-10T04:53:56+00:00</updated>
+  <id>https://0xf15h.github.io//</id>
 
   
     <title type="html">Hex Fish’s Blog</title>
@@ -31,12 +31,12 @@
       <title type="html">TP-Link’s Attempt at GDPR Compliance</title>
       
       
-      <link href="http://localhost:4000/2021/05/10/tp-link-gdpr/" rel="alternate" type="text/html" title="TP-Link's Attempt at GDPR Compliance" />
+      <link href="https://0xf15h.github.io/2021/05/10/tp-link-gdpr/" rel="alternate" type="text/html" title="TP-Link's Attempt at GDPR Compliance" />
       
       <published>2021-05-10T00:00:00+00:00</published>
       <updated>2021-05-10T00:00:00+00:00</updated>
-      <id>http://localhost:4000/2021/05/10/tp-link-gdpr</id>
-      <content type="html" xml:base="http://localhost:4000/2021/05/10/tp-link-gdpr/">&lt;h2&gt;TL;DR&lt;/h2&gt;
+      <id>https://0xf15h.github.io/2021/05/10/tp-link-gdpr</id>
+      <content type="html" xml:base="https://0xf15h.github.io/2021/05/10/tp-link-gdpr/">&lt;h2&gt;TL;DR&lt;/h2&gt;
 
 &lt;p&gt;The TP-Link developers created a &lt;code class=&quot;highlighter-rouge&quot;&gt;/cgi_gdpr&lt;/code&gt; endpoint to support various encrypted requests to comply by the EU’s GDPR. Several issues were found while auditing the authentication protocol and implementation, some of which are easily exploitable.&lt;/p&gt;
 
@@ -264,12 +264,12 @@ Password:
       <title type="html">Post-Auth RCE and Persistence on UOKOO Security Cameras</title>
       
       
-      <link href="http://localhost:4000/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/" rel="alternate" type="text/html" title="Post-Auth RCE and Persistence on UOKOO Security Cameras" />
+      <link href="https://0xf15h.github.io/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/" rel="alternate" type="text/html" title="Post-Auth RCE and Persistence on UOKOO Security Cameras" />
       
       <published>2020-11-17T00:00:00+00:00</published>
       <updated>2020-11-17T00:00:00+00:00</updated>
-      <id>http://localhost:4000/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras</id>
-      <content type="html" xml:base="http://localhost:4000/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/">&lt;p&gt;Recently, I haven’t been doing much reverse engineering at my day job, so I wanted to start a small side project that incorporates some reversing; security camera VR seemed like the perfect project. To avoid the devastation of finding a n-day, I specifically looked for devices that didn’t have any CVEs. Amazon’s top results for “security cameras” gave me an endless list of devices to pick from, so I chose the first option listed without CVEs, a UOKOO security camera.&lt;/p&gt;
+      <id>https://0xf15h.github.io/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras</id>
+      <content type="html" xml:base="https://0xf15h.github.io/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/">&lt;p&gt;Recently, I haven’t been doing much reverse engineering at my day job, so I wanted to start a small side project that incorporates some reversing; security camera VR seemed like the perfect project. To avoid the devastation of finding a n-day, I specifically looked for devices that didn’t have any CVEs. Amazon’s top results for “security cameras” gave me an endless list of devices to pick from, so I chose the first option listed without CVEs, a UOKOO security camera.&lt;/p&gt;
 
 &lt;p&gt;&lt;img src=&quot;/assets/uokoo/uokoo_amazon_ad.png&quot; alt=&quot;UOKOO Amazon Ad&quot; /&gt;&lt;/p&gt;
 
@@ -509,12 +509,12 @@ tmpfs on /etc type tmpfs (rw,relatime,mode=755)
       <title type="html">Secret in the Save File</title>
       
       
-      <link href="http://localhost:4000/2020/04/28/super-meat-boy-save-file/" rel="alternate" type="text/html" title="Secret in the Save File" />
+      <link href="https://0xf15h.github.io/2020/04/28/super-meat-boy-save-file/" rel="alternate" type="text/html" title="Secret in the Save File" />
       
       <published>2020-04-28T00:00:00+00:00</published>
       <updated>2020-04-28T00:00:00+00:00</updated>
-      <id>http://localhost:4000/2020/04/28/super-meat-boy-save-file</id>
-      <content type="html" xml:base="http://localhost:4000/2020/04/28/super-meat-boy-save-file/">&lt;p&gt;This weekend I got stuck on a level in Super Meat Boy and needed to take a break so I decided to poke around the binary
+      <id>https://0xf15h.github.io/2020/04/28/super-meat-boy-save-file</id>
+      <content type="html" xml:base="https://0xf15h.github.io/2020/04/28/super-meat-boy-save-file/">&lt;p&gt;This weekend I got stuck on a level in Super Meat Boy and needed to take a break so I decided to poke around the binary
 for a bit. I started with a bit of recon by checking out some of the files that shipped with the binary.&lt;/p&gt;
 
 &lt;p&gt;The first file I looked at was locdb.txt, which is just a text file containing the game’s strings in various languages.
