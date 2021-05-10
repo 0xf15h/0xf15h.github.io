@@ -7,9 +7,9 @@ title:  TP-Link's Attempt at GDPR Compliance
 
 The TP-Link developers created a `/cgi_gdpr` endpoint to support various encrypted requests to comply by the EU's GDPR. Several issues were found while auditing the authentication protocol and implementation, some of which are easily exploitable.
 
-- The AES key and IV used to encrypt the username and password at login are almost entirely generated from the current time. This allows a passive MitM to brute force decrypt the login requests in seconds. I've written a Scapy script that will parse a PCAP to find a login request and brute force decrypt it [[link]](). 
+- The AES key and IV used to encrypt the username and password at login are almost entirely generated from the current time. This allows a passive MitM to brute force decrypt the login requests in seconds. I've written a Scapy script that will parse a PCAP to find a login request and brute force decrypt it [[link]](https://github.com/0xf15h/tp_link_gdpr/blob/main/decrypt_creds.py). 
 - On the first request to the `/cgi/getParm` endpoint, the web server generates an RSA public/private key-pair. If any of the memory allocations for the keys fail, hardcoded keys will be used as a fallback.
-- The server uses RSA without padding which makes the encryption deterministic. Given the deterministic RSA encrypt and TP-Link's authentication implementation, attackers can crack the login password offline. I've written a PoC on GitHub that demonstrates offline password cracking [[link]]().
+- The server uses RSA without padding which makes the encryption deterministic. Given the deterministic RSA encrypt and TP-Link's authentication implementation, attackers can crack the login password offline. I've written a PoC on GitHub that demonstrates offline password cracking [[link]](https://github.com/0xf15h/tp_link_gdpr/blob/main/password_crack.py).
 - The server requires a server issued sequence field to be included in the RSA encrypt functions to prevent replay attacks. The sequence can be modified based on the data length provided, which can be easily modified without affecting the data decryption and enable a replay attack of a previous login request.
 
 Assuming one of the listed vulnerabilities were exploited to expose login credentials, a 3-year-old unpatched post-auth command injection exploit was used to gain telnet access, as the root user, to the fully patched Archer C20.
@@ -54,7 +54,7 @@ The login message sets the HTTP endpoint to `/cgi/login` and the request data to
 
 ![](/assets/tp_link_gdpr/tp_link_login_page.png)
 
-A `/cgi_gdpr` request's sign field contains the the newly generated AES key and IV, a MD5 hash of the username concatenated with the password, and the sequence from the `/get/Parm` request. The sign field is RSA encrypted using the public key retrieved from the `/cgi/getParm` request. Both data and sign fields are Base64 encoded then sent to the web server's `/cgi_gdpr` endpoint via an HTTP POST request. The server uses its private key to decrypt the sign field. It verifies that the sequence number in the sign field is equal to the server generated sequence number plus the length of the request's Base64 encoded data field. The server then retrieves the AES key and IV and uses them to decrypt the data field. The decrypted data field is parsed and sent to the `/cgi/login` endpoint's handler function. The handler verifies that the username and password specified in the login message match the previously configured username and password. If the credentials are valid the server returns a HTTP OK. I've written a script that automates authentication [[link]]().
+A `/cgi_gdpr` request's sign field contains the the newly generated AES key and IV, a MD5 hash of the username concatenated with the password, and the sequence from the `/get/Parm` request. The sign field is RSA encrypted using the public key retrieved from the `/cgi/getParm` request. Both data and sign fields are Base64 encoded then sent to the web server's `/cgi_gdpr` endpoint via an HTTP POST request. The server uses its private key to decrypt the sign field. It verifies that the sequence number in the sign field is equal to the server generated sequence number plus the length of the request's Base64 encoded data field. The server then retrieves the AES key and IV and uses them to decrypt the data field. The decrypted data field is parsed and sent to the `/cgi/login` endpoint's handler function. The handler verifies that the username and password specified in the login message match the previously configured username and password. If the credentials are valid the server returns a HTTP OK. I've written a script that automates authentication [[link]](https://github.com/0xf15h/tp_link_gdpr/blob/main/authenticate.py).
 
 ## AES Key Entropy Source
 
@@ -70,7 +70,7 @@ The AES key and IV are generated at different times and have different 3 bytes o
 
 ![](/assets/tp_link_gdpr/cbc_decryption.png)
 
-The first block of ciphertext c0 is decrypted into an intermediary value c0′. The c0′ value must be XORed with the IV before revealing the plaintext. After viewing several different login messages, you should notice that the first 16 bytes (AES block size) are always the same: `8\r\n[/cgi/login#0`. If we take this known plaintext value and XOR it with c0′, it'll reveal the IV. If the top 10 bytes of the calculated IV match the top 10 bytes of the brute forced key, which are the Unix Epoch timestamps down to the second, both the AES key and IV have been found. Using this method, an attacker only needs to brute force the AES key space in O(n) time because the IV check can be done in a constant O(1) check. I've written a Scapy script that parses a PCAP to find the login request, gets the packet timestamp, and then cracks the AES key and IV to reveal the credentials in plaintext [[link]]().
+The first block of ciphertext c0 is decrypted into an intermediary value c0′. The c0′ value must be XORed with the IV before revealing the plaintext. After viewing several different login messages, you should notice that the first 16 bytes (AES block size) are always the same: `8\r\n[/cgi/login#0`. If we take this known plaintext value and XOR it with c0′, it'll reveal the IV. If the top 10 bytes of the calculated IV match the top 10 bytes of the brute forced key, which are the Unix Epoch timestamps down to the second, both the AES key and IV have been found. Using this method, an attacker only needs to brute force the AES key space in O(n) time because the IV check can be done in a constant O(1) check. I've written a Scapy script that parses a PCAP to find the login request, gets the packet timestamp, and then cracks the AES key and IV to reveal the credentials in plaintext [[link]](https://github.com/0xf15h/tp_link_gdpr/blob/main/decrypt_creds.py).
 
 ## Default RSA Key
 
@@ -123,7 +123,7 @@ if second_block == rsa_encrypt(md5("admin" + <password_guess>)[-11:] + "&s=" + s
     print("We've probably cracked the password!")
 ```
 
-The admin string comes from the hardcoded username, described in the authentication protocol section. I've written an offline password cracker proof of concept for this example [[link]]().
+The admin string comes from the hardcoded username, described in the authentication protocol section. I've written an offline password cracker proof of concept for this example [[link]](https://github.com/0xf15h/tp_link_gdpr/blob/main/password_crack.py).
 
 ## Replay Attack
 
