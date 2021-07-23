@@ -3,10 +3,10 @@
   <generator uri="http://jekyllrb.com" version="4.0.0">Jekyll</generator>
   
   
-  <link href="https://0xf15h.github.io/feed.xml" rel="self" type="application/atom+xml" />
-  <link href="https://0xf15h.github.io/" rel="alternate" type="text/html" hreflang="en" />
-  <updated>2021-05-10T05:08:47+00:00</updated>
-  <id>https://0xf15h.github.io//</id>
+  <link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" />
+  <link href="http://localhost:4000/" rel="alternate" type="text/html" hreflang="en" />
+  <updated>2021-07-23T04:39:20+00:00</updated>
+  <id>http://localhost:4000//</id>
 
   
     <title type="html">Hex Fish’s Blog</title>
@@ -28,15 +28,124 @@
   
     <entry>
       
+      <title type="html">Reverse Engineering Old Android LPEs in Pegasus</title>
+      
+      
+      <link href="http://localhost:4000/2021/06/22/re-pegasus-lpe/" rel="alternate" type="text/html" title="Reverse Engineering Old Android LPEs in Pegasus" />
+      
+      <published>2021-06-22T00:00:00+00:00</published>
+      <updated>2021-06-22T00:00:00+00:00</updated>
+      <id>http://localhost:4000/2021/06/22/re-pegasus-lpe</id>
+      <content type="html" xml:base="http://localhost:4000/2021/06/22/re-pegasus-lpe/">&lt;p&gt;Earlier today, vx-underground published Android Pegasus samples to their archive &lt;a href=&quot;https://twitter.com/vxunderground/status/1418207502974525441?s=20&quot;&gt;[link]&lt;/a&gt;. The ZIP they provided contained three samples:&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;d257cfde7599f4e20ee08a62053e6b3b936c87d373e6805f0e0c65f1d39ec320&lt;/code&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;First seen in the wild: 2013-05-15&lt;/li&gt;
+  &lt;li&gt;First VT submission: 2013-11-15&lt;/li&gt;
+  &lt;li&gt;&lt;a href=&quot;https://www.virustotal.com/gui/file/d257cfde7599f4e20ee08a62053e6b3b936c87d373e6805f0e0c65f1d39ec320/details&quot;&gt;VirusTotal&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;144778790d4a43a1d93dff6b660a6acb3a6d37a19e6a6f0a6bf1ef47e919648e&lt;/code&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;First seen in the wild: 2017-07-01&lt;/li&gt;
+  &lt;li&gt;First VT submission: 2016-03-18&lt;/li&gt;
+  &lt;li&gt;&lt;a href=&quot;https://www.virustotal.com/gui/file/144778790d4a43a1d93dff6b660a6acb3a6d37a19e6a6f0a6bf1ef47e919648e/details&quot;&gt;VirusTotal&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;bd8cda80aaee3e4a17e9967a1c062ac5c8e4aefd7eaa3362f54044c2c94db52a&lt;/code&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;First seen in the wild: 2020-01-14&lt;/li&gt;
+  &lt;li&gt;First VT submission: 2018-11-11&lt;/li&gt;
+  &lt;li&gt;&lt;a href=&quot;https://www.virustotal.com/gui/file/bd8cda80aaee3e4a17e9967a1c062ac5c8e4aefd7eaa3362f54044c2c94db52a/details&quot;&gt;VirusTotal&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;I decided to look at the last sample because it’s the most recent. The &lt;code class=&quot;highlighter-rouge&quot;&gt;/res/raw/sucopier&lt;/code&gt; caught my interest because the &lt;code class=&quot;highlighter-rouge&quot;&gt;su&lt;/code&gt; prefix denotes it’s probably a privilege escalation exploit.&lt;/p&gt;
+
+&lt;p&gt;The program expects two command line arguments: &lt;code class=&quot;highlighter-rouge&quot;&gt;sucopier &amp;lt;source_file_path&amp;gt; &amp;lt;destination_file_path&amp;gt;&lt;/code&gt;. It gets the path to the current executable from reading the procfs symlink at &lt;code class=&quot;highlighter-rouge&quot;&gt;/proc/self/exe&lt;/code&gt;. If its current UID is not root, it calls a function that iteratively attempts up to six LPEs in the &lt;code class=&quot;highlighter-rouge&quot;&gt;g_exploits&lt;/code&gt; table (yes, they left the symbol in). I reverse engineered most the exploit structure they used in each entry in the &lt;code class=&quot;highlighter-rouge&quot;&gt;g_exploits&lt;/code&gt; table:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-C&quot;&gt;struct exploit
+{
+    char *name;
+    char *dev_file;
+    int   mmap_fd;
+    int   unk_1;
+    int   unk_2;
+    int   mmap_offset;
+    int   mmap_len;
+    int   system_ram_offset_index;
+    int   unk_3;
+    int   unk_4;
+    int   unk_5;
+    void (*trigger)(struct exploit *);
+    void (*cleanup)(struct exploit *);
+};
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;The six exploits are all abusing mmap bounds checks to access kernel memory. The exploits are called in the following order:&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Sam (“/dev/exynos-mem”)&lt;/li&gt;
+  &lt;li&gt;Gimli (“/dev/DspBridge”)&lt;/li&gt;
+  &lt;li&gt;Merry (“/dev/s5p-smem”)&lt;/li&gt;
+  &lt;li&gt;Frodo (“/dev/exynos-mem”)&lt;/li&gt;
+  &lt;li&gt;Aragon (“/dev/video1”)&lt;/li&gt;
+  &lt;li&gt;Legolas (“/dev/graphics/fb5”)&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;I thought this was a unique naming convention and after a bit of Googling it turns out to be Framaroot, a root tool from Android 4. Azimuth Security wrote a blog post about the Framaroot bugs which proved to be invaluable since I couldn’t find the source code to most of the drivers it exploits &lt;a href=&quot;http://blog.azimuthsecurity.com/2013/02/re-visiting-exynos-memory-mapping-bug.html&quot;&gt;[link]&lt;/a&gt;&lt;a href=&quot;https://web.archive.org/web/20130221032723/blog.azimuthsecurity.com/2013/02/re-visiting-exynos-memory-mapping-bug.html&quot;&gt;[archive]&lt;/a&gt;. The age of the exploits also implies that this malware is not from 2018; VirusTotal just is struggling to keep up with Pegasus. After poking around &lt;code class=&quot;highlighter-rouge&quot;&gt;libframalib.so&lt;/code&gt;, I realized that &lt;code class=&quot;highlighter-rouge&quot;&gt;sucopier&lt;/code&gt; uses the exact same naming convention and exploit structure, except it’s surrounded by completely different code and compiled in a different way. Framaroot has always been shipped as an APK with all of the exploits in one monolithic library called &lt;code class=&quot;highlighter-rouge&quot;&gt;libframalib.so&lt;/code&gt;. This giant library entangles a bunch of SuperSU features around the LPEs, making them extremely difficult to objcopy out to repurpose. The next logical conclusion was that NSO Group just reverse engineered Framaroot and reused the exploit. If this is the case, I don’t know why they chose to include the Lord of the Rings naming convention in plaintext and remove the &lt;code class=&quot;highlighter-rouge&quot;&gt;exploit-&amp;gt;dev_file&lt;/code&gt; XOR encoding that Framaroot used:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/pegasus/dev_file_decode.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;It’s also possible that NSO Group had Framaroot source, but who knows ¯\&lt;em&gt;(ツ)&lt;/em&gt;/¯&lt;/p&gt;
+
+&lt;p&gt;After the LPE, &lt;code class=&quot;highlighter-rouge&quot;&gt;sucopier&lt;/code&gt; checks its UID is root to determine if the exploit was successful. If it was successful, it uses the path from &lt;code class=&quot;highlighter-rouge&quot;&gt;/proc/self/exe&lt;/code&gt; to execute itself again with &lt;code class=&quot;highlighter-rouge&quot;&gt;system(path_to_current_exe, src_file, dst_file)&lt;/code&gt;. I’d assume that they felt the need create a new process in case of any memory corruption artifacts, but I’m not sure.&lt;/p&gt;
+
+&lt;p&gt;The &lt;code class=&quot;highlighter-rouge&quot;&gt;sucopier&lt;/code&gt; binary gets to the initial UID check and this time succeeds. It then mount the YAFFS2 filesystem at &lt;code class=&quot;highlighter-rouge&quot;&gt;/dev/block/mtdblock3&lt;/code&gt; block as &lt;code class=&quot;highlighter-rouge&quot;&gt;/system&lt;/code&gt;. These values are hardcoded which makes me believe this binary was compiled to target a specific device. If they were trying to make this even slightly robust, they could have parsed the &lt;code class=&quot;highlighter-rouge&quot;&gt;/dev/block/platform/*/by-name/&lt;/code&gt; symlinks instead. The file from the source command line argument is copied to the destination command line argument. The destination file’s ownership is set to root for both UID and GID and the mode is set to &lt;code class=&quot;highlighter-rouge&quot;&gt;r-x r-x r-x&lt;/code&gt;. It then remounts the previous &lt;code class=&quot;highlighter-rouge&quot;&gt;/system&lt;/code&gt; with the &lt;code class=&quot;highlighter-rouge&quot;&gt;MS_RDONLY&lt;/code&gt; flag set so it’s readonly. Finally it sleeps for 10 seconds and exits. This is extremely inefficient because the tool limits callers to a single file copy per execution which ends in a 10 second sleep on success. Hopefully NSO didn’t plan on coping too many files into &lt;code class=&quot;highlighter-rouge&quot;&gt;/system&lt;/code&gt;.&lt;/p&gt;
+
+&lt;p&gt;I was really bummed that this wasn’t even a semi-recent sample from 2018. If anyone is willing to share some more modern Pegasus samples, please let me know!&lt;/p&gt;</content>
+
+      
+      
+      
+      
+      
+
+      
+        <author>
+            <name>Hex Fish</name>
+          
+          
+        </author>
+      
+
+      
+
+      
+
+      
+        <summary type="html">Earlier today, vx-underground published Android Pegasus samples to their archive [link]. The ZIP they provided contained three samples: d257cfde7599f4e20ee08a62053e6b3b936c87d373e6805f0e0c65f1d39ec320 First seen in the wild: 2013-05-15 First VT submission: 2013-11-15 VirusTotal 144778790d4a43a1d93dff6b660a6acb3a6d37a19e6a6f0a6bf1ef47e919648e First seen in the wild: 2017-07-01 First VT submission: 2016-03-18 VirusTotal bd8cda80aaee3e4a17e9967a1c062ac5c8e4aefd7eaa3362f54044c2c94db52a First seen in the wild: 2020-01-14 First VT submission: 2018-11-11 VirusTotal I decided to look at the last sample because it’s the most recent. The /res/raw/sucopier caught my interest because the su prefix denotes it’s probably a privilege escalation exploit. The program expects two command line arguments: sucopier &amp;lt;source_file_path&amp;gt; &amp;lt;destination_file_path&amp;gt;. It gets the path to the current executable from reading the procfs symlink at /proc/self/exe. If its current UID is not root, it calls a function that iteratively attempts up to six LPEs in the g_exploits table (yes, they left the symbol in). I reverse engineered most the exploit structure they used in each entry in the g_exploits table: struct exploit { char *name; char *dev_file; int mmap_fd; int unk_1; int unk_2; int mmap_offset; int mmap_len; int system_ram_offset_index; int unk_3; int unk_4; int unk_5; void (*trigger)(struct exploit *); void (*cleanup)(struct exploit *); }; The six exploits are all abusing mmap bounds checks to access kernel memory. The exploits are called in the following order: Sam (“/dev/exynos-mem”) Gimli (“/dev/DspBridge”) Merry (“/dev/s5p-smem”) Frodo (“/dev/exynos-mem”) Aragon (“/dev/video1”) Legolas (“/dev/graphics/fb5”) I thought this was a unique naming convention and after a bit of Googling it turns out to be Framaroot, a root tool from Android 4. Azimuth Security wrote a blog post about the Framaroot bugs which proved to be invaluable since I couldn’t find the source code to most of the drivers it exploits [link][archive]. The age of the exploits also implies that this malware is not from 2018; VirusTotal just is struggling to keep up with Pegasus. After poking around libframalib.so, I realized that sucopier uses the exact same naming convention and exploit structure, except it’s surrounded by completely different code and compiled in a different way. Framaroot has always been shipped as an APK with all of the exploits in one monolithic library called libframalib.so. This giant library entangles a bunch of SuperSU features around the LPEs, making them extremely difficult to objcopy out to repurpose. The next logical conclusion was that NSO Group just reverse engineered Framaroot and reused the exploit. If this is the case, I don’t know why they chose to include the Lord of the Rings naming convention in plaintext and remove the exploit-&amp;gt;dev_file XOR encoding that Framaroot used: It’s also possible that NSO Group had Framaroot source, but who knows ¯\(ツ)/¯ After the LPE, sucopier checks its UID is root to determine if the exploit was successful. If it was successful, it uses the path from /proc/self/exe to execute itself again with system(path_to_current_exe, src_file, dst_file). I’d assume that they felt the need create a new process in case of any memory corruption artifacts, but I’m not sure. The sucopier binary gets to the initial UID check and this time succeeds. It then mount the YAFFS2 filesystem at /dev/block/mtdblock3 block as /system. These values are hardcoded which makes me believe this binary was compiled to target a specific device. If they were trying to make this even slightly robust, they could have parsed the /dev/block/platform/*/by-name/ symlinks instead. The file from the source command line argument is copied to the destination command line argument. The destination file’s ownership is set to root for both UID and GID and the mode is set to r-x r-x r-x. It then remounts the previous /system with the MS_RDONLY flag set so it’s readonly. Finally it sleeps for 10 seconds and exits. This is extremely inefficient because the tool limits callers to a single file copy per execution which ends in a 10 second sleep on success. Hopefully NSO didn’t plan on coping too many files into /system. I was really bummed that this wasn’t even a semi-recent sample from 2018. If anyone is willing to share some more modern Pegasus samples, please let me know!</summary>
+      
+
+      
+      
+    </entry>
+  
+  
+  
+    <entry>
+      
       <title type="html">TP-Link’s Attempt at GDPR Compliance</title>
       
       
-      <link href="https://0xf15h.github.io/2021/05/10/tp-link-gdpr/" rel="alternate" type="text/html" title="TP-Link's Attempt at GDPR Compliance" />
+      <link href="http://localhost:4000/2021/05/10/tp-link-gdpr/" rel="alternate" type="text/html" title="TP-Link's Attempt at GDPR Compliance" />
       
       <published>2021-05-10T00:00:00+00:00</published>
       <updated>2021-05-10T00:00:00+00:00</updated>
-      <id>https://0xf15h.github.io/2021/05/10/tp-link-gdpr</id>
-      <content type="html" xml:base="https://0xf15h.github.io/2021/05/10/tp-link-gdpr/">&lt;h2&gt;TL;DR&lt;/h2&gt;
+      <id>http://localhost:4000/2021/05/10/tp-link-gdpr</id>
+      <content type="html" xml:base="http://localhost:4000/2021/05/10/tp-link-gdpr/">&lt;h2&gt;TL;DR&lt;/h2&gt;
 
 &lt;p&gt;The TP-Link developers created a &lt;code class=&quot;highlighter-rouge&quot;&gt;/cgi_gdpr&lt;/code&gt; endpoint to support various encrypted requests to comply by the EU’s GDPR. Several issues were found while auditing the authentication protocol and implementation, some of which are easily exploitable.&lt;/p&gt;
 
@@ -264,12 +373,12 @@ Password:
       <title type="html">Post-Auth RCE and Persistence on UOKOO Security Cameras</title>
       
       
-      <link href="https://0xf15h.github.io/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/" rel="alternate" type="text/html" title="Post-Auth RCE and Persistence on UOKOO Security Cameras" />
+      <link href="http://localhost:4000/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/" rel="alternate" type="text/html" title="Post-Auth RCE and Persistence on UOKOO Security Cameras" />
       
       <published>2020-11-17T00:00:00+00:00</published>
       <updated>2020-11-17T00:00:00+00:00</updated>
-      <id>https://0xf15h.github.io/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras</id>
-      <content type="html" xml:base="https://0xf15h.github.io/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/">&lt;p&gt;Recently, I haven’t been doing much reverse engineering at my day job, so I wanted to start a small side project that incorporates some reversing; security camera VR seemed like the perfect project. To avoid the devastation of finding a n-day, I specifically looked for devices that didn’t have any CVEs. Amazon’s top results for “security cameras” gave me an endless list of devices to pick from, so I chose the first option listed without CVEs, a UOKOO security camera.&lt;/p&gt;
+      <id>http://localhost:4000/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras</id>
+      <content type="html" xml:base="http://localhost:4000/2020/11/17/post-auth-rce-and-persistence-on-uokoo-security-cameras/">&lt;p&gt;Recently, I haven’t been doing much reverse engineering at my day job, so I wanted to start a small side project that incorporates some reversing; security camera VR seemed like the perfect project. To avoid the devastation of finding a n-day, I specifically looked for devices that didn’t have any CVEs. Amazon’s top results for “security cameras” gave me an endless list of devices to pick from, so I chose the first option listed without CVEs, a UOKOO security camera.&lt;/p&gt;
 
 &lt;p&gt;&lt;img src=&quot;/assets/uokoo/uokoo_amazon_ad.png&quot; alt=&quot;UOKOO Amazon Ad&quot; /&gt;&lt;/p&gt;
 
@@ -509,12 +618,12 @@ tmpfs on /etc type tmpfs (rw,relatime,mode=755)
       <title type="html">Secret in the Save File</title>
       
       
-      <link href="https://0xf15h.github.io/2020/04/28/super-meat-boy-save-file/" rel="alternate" type="text/html" title="Secret in the Save File" />
+      <link href="http://localhost:4000/2020/04/28/super-meat-boy-save-file/" rel="alternate" type="text/html" title="Secret in the Save File" />
       
       <published>2020-04-28T00:00:00+00:00</published>
       <updated>2020-04-28T00:00:00+00:00</updated>
-      <id>https://0xf15h.github.io/2020/04/28/super-meat-boy-save-file</id>
-      <content type="html" xml:base="https://0xf15h.github.io/2020/04/28/super-meat-boy-save-file/">&lt;p&gt;This weekend I got stuck on a level in Super Meat Boy and needed to take a break so I decided to poke around the binary
+      <id>http://localhost:4000/2020/04/28/super-meat-boy-save-file</id>
+      <content type="html" xml:base="http://localhost:4000/2020/04/28/super-meat-boy-save-file/">&lt;p&gt;This weekend I got stuck on a level in Super Meat Boy and needed to take a break so I decided to poke around the binary
 for a bit. I started with a bit of recon by checking out some of the files that shipped with the binary.&lt;/p&gt;
 
 &lt;p&gt;The first file I looked at was locdb.txt, which is just a text file containing the game’s strings in various languages.

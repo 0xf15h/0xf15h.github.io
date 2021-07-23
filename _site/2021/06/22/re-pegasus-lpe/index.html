@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  
+  
+  <title>Reverse Engineering Old Android LPEs in Pegasus</title>
+  <meta name="description" content="Earlier today, vx-underground published Android Pegasus samples to their archive [link]. The ZIP they provided contained three samples: d257cfde7599f4e20ee08a62053e6b3b936c87d373e6805f0e0c65f1d39ec320 First seen in the wild: 2013-05-15 First VT submission: 2013-11-15 VirusTotal 144778790d4a43a1d93dff6b660a6acb3a6d37a19e6a6f0a6bf1ef47e919648e First seen in the wild: 2017-07-01 First VT submission: 2016-03-18 VirusTotal bd8cda80aaee3e4a17e9967a1c062ac5c8e4aefd7eaa3362f54044c2c94db52a First seen in the wild: 2020-01-14 First VT submission: 2018-11-11 VirusTotal I decided to look at the last sample because it’s the most recent. The /res/raw/sucopier caught my interest because the su prefix denotes it’s probably a privilege escalation exploit. The program expects two command line arguments: sucopier &amp;lt;source_file_path&amp;gt; &amp;lt;destination_file_path&amp;gt;. It gets the path to the current executable from reading the procfs symlink at /proc/self/exe. If its current UID is not root, it calls a function that iteratively attempts up to six LPEs in the g_exploits table (yes, they left the symbol in). I reverse engineered most the exploit structure they used in each entry in the g_exploits table: struct exploit { char *name; char *dev_file; int mmap_fd; int unk_1; int unk_2; int mmap_offset; int mmap_len; int system_ram_offset_index; int unk_3; int unk_4; int unk_5; void (*trigger)(struct exploit *); void (*cleanup)(struct exploit *); }; The six exploits are all abusing mmap bounds checks to access kernel memory. The exploits are called in the following order: Sam (“/dev/exynos-mem”) Gimli (“/dev/DspBridge”) Merry (“/dev/s5p-smem”) Frodo (“/dev/exynos-mem”) Aragon (“/dev/video1”) Legolas (“/dev/graphics/fb5”) I thought this was a unique naming convention and after a bit of Googling it turns out to be Framaroot, a root tool from Android 4. Azimuth Security wrote a blog post about the Framaroot bugs which proved to be invaluable since I couldn’t find the source code to most of the drivers it exploits [link][archive]. The age of the exploits also implies that this malware is not from 2018; VirusTotal just is struggling to keep up with Pegasus. After poking around libframalib.so, I realized that sucopier uses the exact same naming convention and exploit structure, except it’s surrounded by completely different code and compiled in a different way. Framaroot has always been shipped as an APK with all of the exploits in one monolithic library called libframalib.so. This giant library entangles a bunch of SuperSU features around the LPEs, making them extremely difficult to objcopy out to repurpose. The next logical conclusion was that NSO Group just reverse engineered Framaroot and reused the exploit. If this is the case, I don’t know why they chose to include the Lord of the Rings naming convention in plaintext and remove the exploit-&amp;gt;dev_file XOR encoding that Framaroot used: It’s also possible that NSO Group had Framaroot source, but who knows ¯\(ツ)/¯ After the LPE, sucopier checks its UID is root to determine if the exploit was successful. If it was successful, it uses the path from /proc/self/exe to execute itself again with system(path_to_current_exe, src_file, dst_file). I’d assume that they felt the need create a new process in case of any memory corruption artifacts, but I’m not sure. The sucopier binary gets to the initial UID check and this time succeeds. It then mount the YAFFS2 filesystem at /dev/block/mtdblock3 block as /system. These values are hardcoded which makes me believe this binary was compiled to target a specific device. If they were trying to make this even slightly robust, they could have parsed the /dev/block/platform/*/by-name/ symlinks instead. The file from the source command line argument is copied to the destination command line argument. The destination file’s ownership is set to root for both UID and GID and the mode is set to r-x r-x r-x. It then remounts the previous /system with the MS_RDONLY flag set so it’s readonly. Finally it sleeps for 10 seconds and exits. This is extremely inefficient because the tool limits callers to a single file copy per execution which ends in a 10 second sleep on success. Hopefully NSO didn’t plan on coping too many files into /system. I was really bummed that this wasn’t even a semi-recent sample from 2018. If anyone is willing to share some more modern Pegasus samples, please let me know!">
+  
+
+  <link rel="stylesheet" href="/assets/main.css">
+  <link rel="canonical" href="http://localhost:4000/2021/06/22/re-pegasus-lpe/">
+  
+  
+  <link rel="alternate" type="application/rss+xml" title="Hex Fish&#39;s Blog" href="http://localhost:4000/feed.xml">
+
+  
+
+  
+  <meta property="og:title" content="Reverse Engineering Old Android LPEs in Pegasus">
+  <meta property="og:site_name" content="Hex Fish&#39;s Blog">
+  <meta property="og:url" content="http://localhost:4000/2021/06/22/re-pegasus-lpe/">
+  <meta property="og:description" content="Earlier today, vx-underground published Android Pegasus samples to their archive [link]. The ZIP they provided contained three samples: d257cfde7599f4e20ee08a62053e6b3b936c87d373e6805f0e0c65f1d39ec320 First seen in the wild: 2013-05-15 First VT submission: 2013-11-15 VirusTotal 144778790d4a43a1d93dff6b660a6acb3a6d37a19e6a6f0a6bf1ef47e919648e First seen in the wild: 2017-07-01 First VT submission: 2016-03-18 VirusTotal bd8cda80aaee3e4a17e9967a1c062ac5c8e4aefd7eaa3362f54044c2c94db52a First seen in the wild: 2020-01-14 First VT submission: 2018-11-11 VirusTotal I decided to look at the last sample because it’s the most recent. The /res/raw/sucopier caught my interest because the su prefix denotes it’s probably a privilege escalation exploit. The program expects two command line arguments: sucopier &amp;lt;source_file_path&amp;gt; &amp;lt;destination_file_path&amp;gt;. It gets the path to the current executable from reading the procfs symlink at /proc/self/exe. If its current UID is not root, it calls a function that iteratively attempts up to six LPEs in the g_exploits table (yes, they left the symbol in). I reverse engineered most the exploit structure they used in each entry in the g_exploits table: struct exploit { char *name; char *dev_file; int mmap_fd; int unk_1; int unk_2; int mmap_offset; int mmap_len; int system_ram_offset_index; int unk_3; int unk_4; int unk_5; void (*trigger)(struct exploit *); void (*cleanup)(struct exploit *); }; The six exploits are all abusing mmap bounds checks to access kernel memory. The exploits are called in the following order: Sam (“/dev/exynos-mem”) Gimli (“/dev/DspBridge”) Merry (“/dev/s5p-smem”) Frodo (“/dev/exynos-mem”) Aragon (“/dev/video1”) Legolas (“/dev/graphics/fb5”) I thought this was a unique naming convention and after a bit of Googling it turns out to be Framaroot, a root tool from Android 4. Azimuth Security wrote a blog post about the Framaroot bugs which proved to be invaluable since I couldn’t find the source code to most of the drivers it exploits [link][archive]. The age of the exploits also implies that this malware is not from 2018; VirusTotal just is struggling to keep up with Pegasus. After poking around libframalib.so, I realized that sucopier uses the exact same naming convention and exploit structure, except it’s surrounded by completely different code and compiled in a different way. Framaroot has always been shipped as an APK with all of the exploits in one monolithic library called libframalib.so. This giant library entangles a bunch of SuperSU features around the LPEs, making them extremely difficult to objcopy out to repurpose. The next logical conclusion was that NSO Group just reverse engineered Framaroot and reused the exploit. If this is the case, I don’t know why they chose to include the Lord of the Rings naming convention in plaintext and remove the exploit-&amp;gt;dev_file XOR encoding that Framaroot used: It’s also possible that NSO Group had Framaroot source, but who knows ¯\(ツ)/¯ After the LPE, sucopier checks its UID is root to determine if the exploit was successful. If it was successful, it uses the path from /proc/self/exe to execute itself again with system(path_to_current_exe, src_file, dst_file). I’d assume that they felt the need create a new process in case of any memory corruption artifacts, but I’m not sure. The sucopier binary gets to the initial UID check and this time succeeds. It then mount the YAFFS2 filesystem at /dev/block/mtdblock3 block as /system. These values are hardcoded which makes me believe this binary was compiled to target a specific device. If they were trying to make this even slightly robust, they could have parsed the /dev/block/platform/*/by-name/ symlinks instead. The file from the source command line argument is copied to the destination command line argument. The destination file’s ownership is set to root for both UID and GID and the mode is set to r-x r-x r-x. It then remounts the previous /system with the MS_RDONLY flag set so it’s readonly. Finally it sleeps for 10 seconds and exits. This is extremely inefficient because the tool limits callers to a single file copy per execution which ends in a 10 second sleep on success. Hopefully NSO didn’t plan on coping too many files into /system. I was really bummed that this wasn’t even a semi-recent sample from 2018. If anyone is willing to share some more modern Pegasus samples, please let me know!">
+  
+  
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:site" content="0xf15h">
+  <meta name="twitter:title" content="Reverse Engineering Old Android LPEs in Pegasus">
+  <meta name="twitter:description" content="Earlier today, vx-underground published Android Pegasus samples to their archive [link]. The ZIP they provided contained three samples: d257cfde7599f4e20ee08a62053e6b3b936c87d373e6805f0e0c65f1d39ec...">
+  
+    <meta name="twitter:creator" content="0xf15h">
+  
+  
+
+  <link rel="dns-prefetch" href="https://fonts.gstatic.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css?family=Bitter:400,400i,700&display=swap" rel="stylesheet">
+
+  
+  <!-- Google Analytics -->
+  <script>
+    (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+    (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+    m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+    })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+    ga('create', 'UA-165056834-1', 'auto');
+    ga('send', 'pageview');
+
+  </script>
+
+
+</head>
+
+
+  <body>
+
+    <header class="site-header">
+
+  <div class="wrapper">
+
+    <a class="site-title" href="/">Hex Fish&#39;s Blog</a>
+
+    <nav class="site-nav">
+      
+        
+        <a class="page-link" href="/about/">About</a>
+      
+        
+        <a class="page-link" href="/archives/">Archives</a>
+      
+        
+        <a class="page-link" href="https://github.com/0xf15h">GitHub</a>
+      
+        
+        <a class="page-link" href="https://twitter.com/0xf15h">Twitter</a>
+      
+        
+        <a class="page-link" href="/resources/">Resources</a>
+      
+    </nav>
+
+  </div>
+
+</header>
+
+
+    <main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    
+      <h1 class="post-title" itemprop="name headline">Reverse Engineering Old Android LPEs in Pegasus</h1>
+    
+    <p class="post-meta"><time datetime="2021-06-22T00:00:00+00:00" itemprop="datePublished">Jun 22, 2021</time></p>
+  </header>
+
+  <div class="post-content" itemprop="articleBody">
+    <p>Earlier today, vx-underground published Android Pegasus samples to their archive <a href="https://twitter.com/vxunderground/status/1418207502974525441?s=20">[link]</a>. The ZIP they provided contained three samples:</p>
+
+<p><code class="highlighter-rouge">d257cfde7599f4e20ee08a62053e6b3b936c87d373e6805f0e0c65f1d39ec320</code></p>
+
+<ul>
+  <li>First seen in the wild: 2013-05-15</li>
+  <li>First VT submission: 2013-11-15</li>
+  <li><a href="https://www.virustotal.com/gui/file/d257cfde7599f4e20ee08a62053e6b3b936c87d373e6805f0e0c65f1d39ec320/details">VirusTotal</a></li>
+</ul>
+
+<p><code class="highlighter-rouge">144778790d4a43a1d93dff6b660a6acb3a6d37a19e6a6f0a6bf1ef47e919648e</code></p>
+
+<ul>
+  <li>First seen in the wild: 2017-07-01</li>
+  <li>First VT submission: 2016-03-18</li>
+  <li><a href="https://www.virustotal.com/gui/file/144778790d4a43a1d93dff6b660a6acb3a6d37a19e6a6f0a6bf1ef47e919648e/details">VirusTotal</a></li>
+</ul>
+
+<p><code class="highlighter-rouge">bd8cda80aaee3e4a17e9967a1c062ac5c8e4aefd7eaa3362f54044c2c94db52a</code></p>
+
+<ul>
+  <li>First seen in the wild: 2020-01-14</li>
+  <li>First VT submission: 2018-11-11</li>
+  <li><a href="https://www.virustotal.com/gui/file/bd8cda80aaee3e4a17e9967a1c062ac5c8e4aefd7eaa3362f54044c2c94db52a/details">VirusTotal</a></li>
+</ul>
+
+<p>I decided to look at the last sample because it’s the most recent. The <code class="highlighter-rouge">/res/raw/sucopier</code> caught my interest because the <code class="highlighter-rouge">su</code> prefix denotes it’s probably a privilege escalation exploit.</p>
+
+<p>The program expects two command line arguments: <code class="highlighter-rouge">sucopier &lt;source_file_path&gt; &lt;destination_file_path&gt;</code>. It gets the path to the current executable from reading the procfs symlink at <code class="highlighter-rouge">/proc/self/exe</code>. If its current UID is not root, it calls a function that iteratively attempts up to six LPEs in the <code class="highlighter-rouge">g_exploits</code> table (yes, they left the symbol in). I reverse engineered most the exploit structure they used in each entry in the <code class="highlighter-rouge">g_exploits</code> table:</p>
+
+<pre><code class="language-C">struct exploit
+{
+    char *name;
+    char *dev_file;
+    int   mmap_fd;
+    int   unk_1;
+    int   unk_2;
+    int   mmap_offset;
+    int   mmap_len;
+    int   system_ram_offset_index;
+    int   unk_3;
+    int   unk_4;
+    int   unk_5;
+    void (*trigger)(struct exploit *);
+    void (*cleanup)(struct exploit *);
+};
+</code></pre>
+
+<p>The six exploits are all abusing mmap bounds checks to access kernel memory. The exploits are called in the following order:</p>
+
+<ul>
+  <li>Sam (“/dev/exynos-mem”)</li>
+  <li>Gimli (“/dev/DspBridge”)</li>
+  <li>Merry (“/dev/s5p-smem”)</li>
+  <li>Frodo (“/dev/exynos-mem”)</li>
+  <li>Aragon (“/dev/video1”)</li>
+  <li>Legolas (“/dev/graphics/fb5”)</li>
+</ul>
+
+<p>I thought this was a unique naming convention and after a bit of Googling it turns out to be Framaroot, a root tool from Android 4. Azimuth Security wrote a blog post about the Framaroot bugs which proved to be invaluable since I couldn’t find the source code to most of the drivers it exploits <a href="http://blog.azimuthsecurity.com/2013/02/re-visiting-exynos-memory-mapping-bug.html">[link]</a><a href="https://web.archive.org/web/20130221032723/blog.azimuthsecurity.com/2013/02/re-visiting-exynos-memory-mapping-bug.html">[archive]</a>. The age of the exploits also implies that this malware is not from 2018; VirusTotal just is struggling to keep up with Pegasus. After poking around <code class="highlighter-rouge">libframalib.so</code>, I realized that <code class="highlighter-rouge">sucopier</code> uses the exact same naming convention and exploit structure, except it’s surrounded by completely different code and compiled in a different way. Framaroot has always been shipped as an APK with all of the exploits in one monolithic library called <code class="highlighter-rouge">libframalib.so</code>. This giant library entangles a bunch of SuperSU features around the LPEs, making them extremely difficult to objcopy out to repurpose. The next logical conclusion was that NSO Group just reverse engineered Framaroot and reused the exploit. If this is the case, I don’t know why they chose to include the Lord of the Rings naming convention in plaintext and remove the <code class="highlighter-rouge">exploit-&gt;dev_file</code> XOR encoding that Framaroot used:</p>
+
+<p><img src="/assets/pegasus/dev_file_decode.png" alt="" /></p>
+
+<p>It’s also possible that NSO Group had Framaroot source, but who knows ¯\<em>(ツ)</em>/¯</p>
+
+<p>After the LPE, <code class="highlighter-rouge">sucopier</code> checks its UID is root to determine if the exploit was successful. If it was successful, it uses the path from <code class="highlighter-rouge">/proc/self/exe</code> to execute itself again with <code class="highlighter-rouge">system(path_to_current_exe, src_file, dst_file)</code>. I’d assume that they felt the need create a new process in case of any memory corruption artifacts, but I’m not sure.</p>
+
+<p>The <code class="highlighter-rouge">sucopier</code> binary gets to the initial UID check and this time succeeds. It then mount the YAFFS2 filesystem at <code class="highlighter-rouge">/dev/block/mtdblock3</code> block as <code class="highlighter-rouge">/system</code>. These values are hardcoded which makes me believe this binary was compiled to target a specific device. If they were trying to make this even slightly robust, they could have parsed the <code class="highlighter-rouge">/dev/block/platform/*/by-name/</code> symlinks instead. The file from the source command line argument is copied to the destination command line argument. The destination file’s ownership is set to root for both UID and GID and the mode is set to <code class="highlighter-rouge">r-x r-x r-x</code>. It then remounts the previous <code class="highlighter-rouge">/system</code> with the <code class="highlighter-rouge">MS_RDONLY</code> flag set so it’s readonly. Finally it sleeps for 10 seconds and exits. This is extremely inefficient because the tool limits callers to a single file copy per execution which ends in a 10 second sleep on success. Hopefully NSO didn’t plan on coping too many files into <code class="highlighter-rouge">/system</code>.</p>
+
+<p>I was really bummed that this wasn’t even a semi-recent sample from 2018. If anyone is willing to share some more modern Pegasus samples, please let me know!</p>
+
+  </div>
+
+  
+
+</article>
+
+      </div>
+    </main>
+
+    <footer class="site-footer">
+
+  <div class="wrapper">
+
+    <p>
+      
+
+&copy; Hex Fish - Powered by <a href="https://jekyllrb.com">Jekyll</a> &amp; <a href="https://github.com/yous/whiteglass">whiteglass</a> - Subscribe via <a href="http://localhost:4000/feed.xml">RSS</a>
+
+    </p>
+
+  </div>
+
+</footer>
+
+
+  </body>
+
+</html>
